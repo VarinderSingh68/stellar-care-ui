@@ -9,7 +9,7 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
   
-# Add this environment variable to opt into Node.js 24
+# Opt-in to Node.js 24 to prepare for the Node.js 20 deprecation
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   
