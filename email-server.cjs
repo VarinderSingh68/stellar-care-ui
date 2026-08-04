@@ -517,43 +517,10 @@ app.get('/api/bookings', (req, res) => {
   });
 });
 
-// Send booking confirmation email
-app.post('/api/send-booking', async (req, res) => {
+async function sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason }) {
   try {
-    const { patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason } = req.body;
-
-    // Save booking to file
-    fs.readFile(BOOKINGS_FILE, 'utf8', (err, data) => {
-      if (err) {
-        console.error('❌ Error reading bookings file:', err.message);
-        // Still try to send email
-      } else {
-        const bookings = JSON.parse(data);
-        const newBooking = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          patientName,
-          patientEmail,
-          patientPhone,
-          appointmentDate,
-          appointmentTime,
-          reason,
-          status: 'scheduled',
-          createdAt: new Date().toISOString(),
-        };
-        bookings.push(newBooking);
-        fs.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8', (err) => {
-          if (err) {
-            console.error('❌ Error writing to bookings file:', err.message);
-          } else {
-            console.log('✅ Booking saved to file.');
-          }
-        });
-      }
-    });
-
     console.log('📧 Sending booking emails for:', patientName);
 
-    // Email to patient
     const patientMailOptions = {
       from: emailUser,
       to: patientEmail,
@@ -577,7 +544,6 @@ app.post('/api/send-booking', async (req, res) => {
       `,
     };
 
-    // Email to admin
     const adminMailOptions = {
       from: emailUser,
       to: 'ngw.designer@gmail.com',
@@ -601,18 +567,59 @@ app.post('/api/send-booking', async (req, res) => {
       `,
     };
 
-    // Send emails
-    const patientResult = await transporter.sendMail(patientMailOptions); // Use Nodemailer transporter
-    const adminResult = await transporter.sendMail(adminMailOptions);     // Use Nodemailer transporter
+    const patientResult = await transporter.sendMail(patientMailOptions);
+    const adminResult = await transporter.sendMail(adminMailOptions);
 
     console.log('✅ Emails sent successfully');
     console.log('   Patient email:', patientResult.response);
     console.log('   Admin email:', adminResult.response);
-
-    res.json({ success: true, message: 'Emails sent to patient and admin.' });
   } catch (error) {
-    console.error('❌ Email error:', error.message);
-    res.status(500).json({ success: false, message: 'Failed to send email: ' + error.message });
+    console.error('❌ Booking email error:', error?.message || error);
+  }
+}
+
+// Send booking confirmation email
+app.post('/api/send-booking', async (req, res) => {
+  try {
+    const { patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason } = req.body;
+
+    if (!patientName || !patientEmail || !patientPhone || !appointmentDate || !appointmentTime || !reason) {
+      return res.status(400).json({ success: false, message: 'Missing booking fields.' });
+    }
+
+    const newBooking = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      patientName,
+      patientEmail,
+      patientPhone,
+      appointmentDate,
+      appointmentTime,
+      reason,
+      status: 'scheduled',
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      const data = await fs.promises.readFile(BOOKINGS_FILE, 'utf8');
+      const bookings = JSON.parse(data);
+      bookings.push(newBooking);
+      await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8');
+      console.log('✅ Booking saved to file.');
+    } catch (fileError) {
+      if (fileError.code === 'ENOENT') {
+        await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify([newBooking], null, 2), 'utf8');
+        console.log('✅ Booking file created and saved.');
+      } else {
+        console.error('❌ Booking file save error:', fileError.message);
+      }
+    }
+
+    res.json({ success: true, message: 'Booking received. Email notification is being processed.' });
+
+    sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason });
+  } catch (error) {
+    console.error('❌ Booking endpoint error:', error?.message || error);
+    res.status(500).json({ success: false, message: 'Failed to process booking.' });
   }
 });
 
