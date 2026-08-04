@@ -534,8 +534,9 @@ async function sendBookingEmails({ patientName, patientEmail, patientPhone, appo
     console.log('📧 Sending booking emails for:', patientName);
 
     const patientMailOptions = {
-      from: emailUser,
+      from: cleanedEmailUser,
       to: patientEmail,
+      replyTo: cleanedEmailUser,
       subject: 'CardioVita - Appointment Confirmation',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -557,8 +558,9 @@ async function sendBookingEmails({ patientName, patientEmail, patientPhone, appo
     };
 
     const adminMailOptions = {
-      from: emailUser,
+      from: cleanedEmailUser,
       to: 'ngw.designer@gmail.com',
+      replyTo: cleanedEmailUser,
       subject: `New Appointment Booking - ${patientName}`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -585,8 +587,10 @@ async function sendBookingEmails({ patientName, patientEmail, patientPhone, appo
     console.log('✅ Emails sent successfully');
     console.log('   Patient email:', patientResult.response);
     console.log('   Admin email:', adminResult.response);
+    return { patientResult, adminResult };
   } catch (error) {
     console.error('❌ Booking email error:', error?.message || error);
+    throw error;
   }
 }
 
@@ -626,9 +630,13 @@ app.post('/api/send-booking', async (req, res) => {
       }
     }
 
-    res.json({ success: true, message: 'Booking received. Email notification is being processed.' });
-
-    sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason });
+    try {
+      await sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason });
+      res.json({ success: true, message: 'Booking confirmed and emails sent.' });
+    } catch (emailError) {
+      console.error('❌ Booking processed but email failed:', emailError?.message || emailError);
+      res.status(500).json({ success: false, message: 'Booking saved but email delivery failed. Check server logs.' });
+    }
   } catch (error) {
     console.error('❌ Booking endpoint error:', error?.message || error);
     res.status(500).json({ success: false, message: 'Failed to process booking.' });
