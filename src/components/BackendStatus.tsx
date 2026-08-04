@@ -22,7 +22,11 @@ const BackendStatus = () => {
   const [message, setMessage] = useState<string>("");
 
   useEffect(() => {
-    const baseUrl = API_CONFIG.baseUrl?.trim();
+    let baseUrl = API_CONFIG.baseUrl?.trim();
+    if (!baseUrl && typeof window !== "undefined") {
+      baseUrl = window.location.origin;
+    }
+
     if (!baseUrl) {
       setStatus("missing");
       setMessage("Set VITE_API_URL for backend access.");

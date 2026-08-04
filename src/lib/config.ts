@@ -1,5 +1,5 @@
 const localFallbackBaseUrl = 'http://localhost:5004';
-const sameOriginFallbackBaseUrl = '';
+const sameOriginFallbackBaseUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
 export const API_CONFIG = {
   baseUrl: import.meta.env.VITE_API_URL || (import.meta.env.DEV ? localFallbackBaseUrl : sameOriginFallbackBaseUrl),
