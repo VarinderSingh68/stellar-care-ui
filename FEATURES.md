@@ -57,8 +57,7 @@ The booking system requires a Node.js backend server for email delivery. To enab
    ```bash
    npm run dev:all
    ```
-   - Frontend: http://localhost:8081
-   - Backend: http://localhost:5000
+   This command will start both the frontend (usually on http://localhost:8081 or http://localhost:5173) and the email backend server (on http://localhost:5000).
 
 ### 📚 Project Structure
 

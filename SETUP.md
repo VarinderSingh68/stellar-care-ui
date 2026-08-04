@@ -26,7 +26,7 @@ Open terminal and run:
 npm install
 npm run dev:all
 ```
-
+This command will start both the frontend and the email server concurrently.
 This starts:
 - ✅ Frontend on http://localhost:8081
 - ✅ Email server on http://localhost:5000
@@ -68,22 +68,6 @@ Features:
 - Check `.env` file exists with correct password
 - Make sure both servers running (npm run dev:all)
 - Verify Gmail app password (not regular password!)
-
-**Server not starting?**
-```bash
-npm install --legacy-peer-deps
-npm run dev:all
-```
-
-**Use individual servers:**
-```bash
-# Terminal 1
-npm run dev
-
-# Terminal 2  
-npm run dev:server
-```
-
 ---
 
 **Need help?** Check `EMAIL_SETUP.md` and `FEATURES.md` for more details.

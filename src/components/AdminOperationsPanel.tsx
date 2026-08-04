@@ -31,14 +31,13 @@ import {
   type StaffMember,
   type TreatmentPlan,
   getAdminCredentials,
-  getAppointments,
+  getBookings,
   getClinicalNotes,
   getClinicSettings,
   getPatients,
   getStaffMembers,
   getTreatmentPlans,
   setAdminCredentials,
-  setAppointments,
   setClinicalNotes,
   setClinicSettings,
   setPatients,
@@ -54,14 +53,16 @@ import {
   updateFollowUp,
   type FollowUp,
 } from "@/lib/patient-portal";
+import { useQuery } from "@tanstack/react-query";
+import { Calendar } from "@/components/ui/calendar";
 
 type AppointmentFormState = {
   patientId: string;
   patientName: string;
   patientEmail: string;
   patientPhone: string;
-  date: string;
-  time: string;
+  appointmentDate: string;
+  appointmentTime: string;
   durationMinutes: string;
   reason: string;
   status: AppointmentStatus;
@@ -131,8 +132,8 @@ const createDefaultAppointmentForm = (): AppointmentFormState => ({
   patientName: "",
   patientEmail: "",
   patientPhone: "",
-  date: getTodayInputValue(),
-  time: "10:00",
+  appointmentDate: getTodayInputValue(),
+  appointmentTime: "10:00",
   durationMinutes: "30",
   reason: "",
   status: "scheduled",
@@ -217,7 +218,7 @@ const openWhatsApp = (phone: string | undefined, text: string) => {
 };
 
 const sortAppointments = (a: AdminAppointment, b: AdminAppointment) => {
-  return `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`);
+  return `${a.appointmentDate}T${a.appointmentTime}`.localeCompare(`${b.appointmentDate}T${b.appointmentTime}`);
 };
 
 const isSameMonth = (value?: string) => {
@@ -236,7 +237,10 @@ const AdminOperationsPanel = () => {
   const [activeTool, setActiveTool] = useState("today");
   const [message, setMessage] = useState("");
   const [patients, setPatientsState] = useState<AdminPatient[]>(() => getPatients());
-  const [appointments, setAppointmentsState] = useState<AdminAppointment[]>(() => getAppointments());
+    const { data: appointments = [], refetch: refetchAppointments } = useQuery({
+    queryKey: ["appointments"],
+    queryFn: getBookings,
+  });
   const [treatmentPlans, setTreatmentPlansState] = useState<TreatmentPlan[]>(() => getTreatmentPlans());
   const [clinicalNotes, setClinicalNotesState] = useState<ClinicalNote[]>(() => getClinicalNotes());
   const [staffMembers, setStaffMembersState] = useState<StaffMember[]>(() => getStaffMembers());
@@ -259,14 +263,12 @@ const AdminOperationsPanel = () => {
   });
 
   const savePatientList = (updated: AdminPatient[]) => {
-    setPatients(updated);
     setPatientsState(updated);
   };
 
   const saveAppointmentList = (updated: AdminAppointment[]) => {
-    const sorted = [...updated].sort(sortAppointments);
-    setAppointments(sorted);
-    setAppointmentsState(sorted);
+    //The refetchAppointments function is used to refetch the appointments from the server.
+    refetchAppointments();
   };
 
   const saveTreatmentPlanList = (updated: TreatmentPlan[]) => {
@@ -288,12 +290,12 @@ const AdminOperationsPanel = () => {
   const today = getTodayInputValue();
 
   const todayAppointments = useMemo(
-    () => appointments.filter((appointment) => appointment.date === today).sort(sortAppointments),
+    () => appointments.filter((appointment) => appointment.appointmentDate === today).sort(sortAppointments),
     [appointments, today],
   );
 
   const calendarAppointments = useMemo(
-    () => appointments.filter((appointment) => appointment.date === calendarDate).sort(sortAppointments),
+    () => appointments.filter((appointment) => appointment.appointmentDate === calendarDate).sort(sortAppointments),
     [appointments, calendarDate],
   );
 
@@ -332,7 +334,7 @@ const AdminOperationsPanel = () => {
       .filter((appointment) => appointment.patientId === selectedTimelinePatientId || matchesPatientName(appointment.patientName))
       .map((appointment) => ({
         id: appointment.id,
-        date: `${appointment.date}T${appointment.time}`,
+        date: `${appointment.appointmentDate}T${appointment.appointmentTime}`,
         title: `${appointment.status} appointment`,
         description: `${appointment.reason}${appointment.notes ? ` | ${appointment.notes}` : ""}`,
         tag: "Appointment",
@@ -426,9 +428,9 @@ const AdminOperationsPanel = () => {
     const pendingDues = patients.reduce((sum, patient) => sum + getBalanceDueAmount(patient), 0);
     const monthPatients = patients.filter((patient) => isSameMonth(patient.visitDate || patient.prescriptionDate)).length;
     const completedAppointments = appointments.filter(
-      (appointment) => appointment.status === "completed" && isSameMonth(appointment.date),
+      (appointment) => appointment.status === "completed" && isSameMonth(appointment.appointmentDate),
     ).length;
-    const scheduledAppointments = appointments.filter((appointment) => isSameMonth(appointment.date)).length;
+    const scheduledAppointments = appointments.filter((appointment) => isSameMonth(appointment.appointmentDate)).length;
 
     const treatmentCounts = patients.reduce<Record<string, number>>((acc, patient) => {
       const label = (patient.suffering || "General care").split(/[.,\n]/)[0].trim() || "General care";
@@ -460,9 +462,9 @@ const AdminOperationsPanel = () => {
     }));
   };
 
-  const createAppointment = () => {
+  const createAppointment = async () => {
     const patientName = appointmentForm.patientName.trim();
-    if (!patientName || !appointmentForm.date || !appointmentForm.time || !appointmentForm.reason.trim()) {
+    if (!patientName || !appointmentForm.appointmentDate || !appointmentForm.appointmentTime || !appointmentForm.reason.trim()) {
       setMessage("Add patient, date, time, and appointment reason.");
       return;
     }
@@ -473,32 +475,64 @@ const AdminOperationsPanel = () => {
       patientName,
       patientEmail: appointmentForm.patientEmail.trim() || undefined,
       patientPhone: appointmentForm.patientPhone.trim() || undefined,
-      date: appointmentForm.date,
-      time: appointmentForm.time,
+      appointmentDate: appointmentForm.appointmentDate,
+      appointmentTime: appointmentForm.appointmentTime,
       durationMinutes: Number(appointmentForm.durationMinutes) || 30,
       reason: appointmentForm.reason.trim(),
       status: appointmentForm.status,
       notes: appointmentForm.notes.trim() || undefined,
-      createdAt: new Date().toISOString(),
+      bookingDate: new Date().toISOString(),
     };
 
-    saveAppointmentList([appointment, ...appointments]);
-    setCalendarDate(appointment.date);
-    setAppointmentForm(createDefaultAppointmentForm());
-    setMessage("Appointment added to the calendar.");
+    try {
+      const response = await fetch('/api/appointments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(appointment),
+      });
+
+      if (response.ok) {
+        saveAppointmentList([appointment, ...appointments]);
+        setCalendarDate(appointment.appointmentDate);
+        setAppointmentForm(createDefaultAppointmentForm());
+        setMessage("Appointment added to the calendar.");
+      } else {
+        setMessage("Failed to create appointment.");
+      }
+    } catch (error) {
+      setMessage("Error creating appointment.");
+    }
   };
 
-  const updateAppointmentStatus = (appointmentId: string, status: AppointmentStatus) => {
-    saveAppointmentList(
-      appointments.map((appointment) => (appointment.id === appointmentId ? { ...appointment, status } : appointment)),
-    );
-    setMessage(`Appointment marked as ${status}.`);
+  const updateAppointmentStatus = async (appointmentId: string, status: AppointmentStatus) => {
+    try {
+      const response = await fetch(`/api/appointments/${appointmentId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status }),
+      });
+
+      if (response.ok) {
+        saveAppointmentList(
+          appointments.map((appointment) => (appointment.id === appointmentId ? { ...appointment, status } : appointment)),
+        );
+        setMessage(`Appointment marked as ${status}.`);
+      } else {
+        setMessage("Failed to update appointment status.");
+      }
+    } catch (error) {
+      setMessage("Error updating appointment status.");
+    }
   };
 
   const sendAppointmentReminder = (appointment: AdminAppointment) => {
     const sent = openWhatsApp(
       appointment.patientPhone,
-      `Dear ${appointment.patientName}, this is a reminder for your appointment at ${settingsForm.clinicName} on ${formatDateValue(appointment.date)} at ${appointment.time}.`,
+      `Dear ${appointment.patientName}, this is a reminder for your appointment at ${settingsForm.clinicName} on ${formatDateValue(appointment.appointmentDate)} at ${appointment.appointmentTime}.`,
     );
     setMessage(sent ? "WhatsApp appointment reminder opened." : "No WhatsApp number found for this appointment.");
   };
@@ -702,7 +736,7 @@ const AdminOperationsPanel = () => {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-semibold text-white">{appointment.time} - {appointment.patientName}</p>
+                  <p className="font-semibold text-white">{appointment.appointmentTime} - {appointment.patientName}</p>
                   <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs capitalize text-slate-200">
                     {appointment.status}
                   </span>
@@ -710,7 +744,7 @@ const AdminOperationsPanel = () => {
                 <p className="mt-1 text-sm text-slate-400">{appointment.reason}</p>
                 <div className="mt-3 grid gap-x-4 gap-y-1 text-sm text-slate-400 md:grid-cols-2">
                   <p>Duration: {appointment.durationMinutes} min</p>
-                  <p>Date: {formatDateValue(appointment.date)}</p>
+                  <p>Date: {formatDateValue(appointment.appointmentDate)}</p>
                   <p>Phone: {appointment.patientPhone || "-"}</p>
                   <p>Email: {appointment.patientEmail || "-"}</p>
                 </div>
@@ -876,11 +910,11 @@ const AdminOperationsPanel = () => {
                 <div className="grid gap-4 md:grid-cols-3">
                   <div>
                     <Label htmlFor="appointment-date">Date</Label>
-                    <Input id="appointment-date" type="date" value={appointmentForm.date} onChange={(event) => setAppointmentForm({ ...appointmentForm, date: event.target.value })} className={fieldClass} />
+                    <Input id="appointment-date" type="date" value={appointmentForm.appointmentDate} onChange={(event) => setAppointmentForm({ ...appointmentForm, appointmentDate: event.target.value })} className={fieldClass} />
                   </div>
                   <div>
                     <Label htmlFor="appointment-time">Time</Label>
-                    <Input id="appointment-time" type="time" value={appointmentForm.time} onChange={(event) => setAppointmentForm({ ...appointmentForm, time: event.target.value })} className={fieldClass} />
+                    <Input id="appointment-time" type="time" value={appointmentForm.appointmentTime} onChange={(event) => setAppointmentForm({ ...appointmentForm, appointmentTime: event.target.value })} className={fieldClass} />
                   </div>
                   <div>
                     <Label htmlFor="appointment-duration">Minutes</Label>

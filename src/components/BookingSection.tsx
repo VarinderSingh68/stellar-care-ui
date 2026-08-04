@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
-import { saveBooking, sendBookingEmail, type Booking } from "@/lib/booking";
+import { saveBookingAndNotify, type Booking } from "@/lib/booking";
 import { cn } from "@/lib/utils";
 
 const timeSlots = [
@@ -57,8 +57,7 @@ const BookingSection = () => {
     setMessage("");
 
     try {
-      const booking: Booking = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      const bookingData = {
         patientName: formData.patientName.trim(),
         patientEmail: formData.patientEmail.trim(),
         patientPhone: formData.patientPhone.trim(),
@@ -70,28 +69,24 @@ const BookingSection = () => {
           year: "numeric",
         }),
         appointmentTime: selectedTime,
-        bookingDate: new Date().toISOString(),
       };
 
-      // Save locally
-      saveBooking(booking);
-
-      // Send email
-      const emailResult = await sendBookingEmail(booking);
+      const result = await saveBookingAndNotify(bookingData);
 
       setMessage(
-        emailResult.success
-          ? "✓ " + emailResult.message
-          : "✓ Appointment saved! " + emailResult.message
+        result.success
+          ? `✓ ${result.message}`
+          : `⚠️ ${result.message}`
       );
 
-      // Reset form
-      setFormData({ patientName: "", patientEmail: "", patientPhone: "", reason: "" });
-      setDate(undefined);
-      setSelectedTime(null);
+      if (result.success) {
+        setFormData({ patientName: "", patientEmail: "", patientPhone: "", reason: "" });
+        setDate(undefined);
+        setSelectedTime(null);
+      }
     } catch (error) {
       console.error("Booking error:", error);
-      setMessage("Appointment saved, but we couldn't send the notification. We'll contact you shortly.");
+      setMessage("An unexpected error occurred. Please try again.");
     } finally {
       setIsSubmitting(false);
     }

@@ -21,7 +21,7 @@ You should see output from both the frontend (Vite) and the email server, includ
 ```
 
 ### Step 3: Test Booking with Emails
-
+Once both servers are running (indicated by the output from `npm run dev:all`):
 While both servers are running:
 1. Go to http://localhost:8082/booking
 2. Fill in your details
@@ -54,9 +54,7 @@ While both servers are running:
 - Press Ctrl+C and try: `npm install --legacy-peer-deps`
 
 **If email server won't start:**
-- Make sure you ran: `npm run email-server`
-- Check that .env file exists in project root
-- Look for errors in terminal
+- Check that `.env` file exists in project root
 
 **Emails not sending:**
 - Verify .env file has the correct Gmail app password

@@ -1,3 +1,5 @@
+import { API_CONFIG } from "./config";
+
 export interface AdminPatient {
   id: string;
   name: string;
@@ -33,13 +35,13 @@ export interface AdminAppointment {
   patientName: string;
   patientEmail?: string;
   patientPhone?: string;
-  date: string;
-  time: string;
-  durationMinutes: number;
+  appointmentDate: string;
+  appointmentTime: string;
+  durationMinutes?: number;
   reason: string;
-  status: AppointmentStatus;
+  status?: AppointmentStatus;
   notes?: string;
-  createdAt: string;
+  bookingDate: string;
 }
 
 export interface TreatmentPlan {
@@ -188,12 +190,32 @@ export const setMediaItems = (media: AdminMediaItem[]) => {
   writeJson(MEDIA_KEY, media, "mediaUpdated");
 };
 
-export const getAppointments = (): AdminAppointment[] => {
-  return readJson<AdminAppointment[]>(APPOINTMENTS_KEY, []);
-};
-
-export const setAppointments = (appointments: AdminAppointment[]) => {
-  writeJson(APPOINTMENTS_KEY, appointments, "appointmentsUpdated");
+export const getBookings = async (): Promise<AdminAppointment[]> => {
+  try {
+    const response = await fetch(`${API_CONFIG.baseUrl}/api/bookings`);
+    if (!response.ok) {
+      console.error("Failed to fetch bookings");
+      return [];
+    }
+    const bookings = await response.json();
+    // Map server data to the AdminAppointment interface
+    return bookings.map((b: any) => ({
+      id: b.id,
+      patientName: b.patientName,
+      patientEmail: b.patientEmail,
+      patientPhone: b.patientPhone,
+      appointmentDate: b.appointmentDate,
+      appointmentTime: b.appointmentTime,
+      reason: b.reason,
+      bookingDate: b.bookingDate,
+      // Add default values for fields not present in the booking data
+      status: "scheduled",
+      durationMinutes: 30, 
+    }));
+  } catch (error) {
+    console.error("Error fetching bookings:", error);
+    return [];
+  }
 };
 
 export const getTreatmentPlans = (): TreatmentPlan[] => {
@@ -268,7 +290,7 @@ export const sendPrescriptionEmail = async (
   payload: PrescriptionEmailPayload,
 ): Promise<PrescriptionEmailResult> => {
   try {
-    const response = await fetch("http://localhost:5000/api/send-prescription", {
+    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.prescription}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -292,6 +314,11 @@ export const sendPrescriptionEmail = async (
     };
   } catch (error) {
     console.error("Prescription notification send error:", error);
-    return { success: false, message: "Patient record saved, but could not reach notification server." };
+    let message = "Patient record saved, but could not reach notification server.";
+    // Provide a more specific error for the most common failure case.
+    if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+      message = "Patient record saved, but couldn't connect to the notification server. Is it running? (Hint: `node email-server.cjs`)";
+    }
+    return { success: false, message };
   }
 };

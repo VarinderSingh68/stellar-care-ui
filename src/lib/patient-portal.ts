@@ -1,3 +1,4 @@
+import { API_CONFIG } from "./config";
 export interface PatientRecord {
   id: string;
   patientName: string;
@@ -265,6 +266,10 @@ export interface SendNotificationResult {
   pdfUrl?: string;
 }
 
+import { API_CONFIG } from "./config";
+
+// ... (rest of the file)
+
 export const sendFollowUpEmail = async (payload: {
   patientName: string;
   patientEmail: string;
@@ -275,7 +280,7 @@ export const sendFollowUpEmail = async (payload: {
   type: string;
 }) => {
   try {
-    const response = await fetch("http://localhost:5000/api/send-followup", {
+    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.followup}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -306,7 +311,7 @@ export const sendReportEmail = async (payload: {
   date: string;
 }) => {
   try {
-    const response = await fetch("http://localhost:5000/api/send-report", {
+    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.report}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -341,7 +346,7 @@ export const sendBillingEmail = async (payload: {
   submissionDate: string;
 }) => {
   try {
-    const response = await fetch("http://localhost:5000/api/send-billing", {
+    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.billing}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

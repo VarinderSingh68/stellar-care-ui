@@ -116,6 +116,9 @@ src/
 - [Features Guide](FEATURES_GUIDE.md) - Comprehensive feature documentation
 - [Quick Start Guide](QUICK_START.md) - Step-by-step usage instructions
 - [Setup Guide](SETUP.md) - Development environment setup
+- [Email Troubleshooting Guide](EMAIL_TROUBLESHOOTING.md) - **IMPORTANT**: Fix email sending issues
+- [Email Setup Guide](EMAIL_SETUP.md) - Configure email notifications
+- [WATI Setup Guide](WATI_SETUP.md) - Configure WhatsApp notifications
 
 ## 🔐 Demo Credentials
 
@@ -128,6 +131,34 @@ src/
 - **Email**: patient@demo.com
 - **Password**: demo123
 - **URL**: `/patient-portal`
+
+## 📧 Email & Notifications
+
+This application includes a complete email notification system:
+
+### Quick Email Setup
+```bash
+# 1. Test your email configuration first
+node test-email-connection.cjs
+
+# 2. Start the email server
+node email-server.cjs
+
+# 3. Start the frontend (in another terminal)
+npm run dev
+```
+
+### Available Email Endpoints
+- **Booking Confirmations**: `/api/send-booking`
+- **Prescriptions**: `/api/send-prescription`
+- **Follow-up Reminders**: `/api/send-followup`
+- **Medical Reports**: `/api/send-report`
+- **Billing Summaries**: `/api/send-billing`
+
+### WhatsApp Integration (WATI)
+The system also supports WhatsApp notifications via WATI API. See [WATI_SETUP.md](WATI_SETUP.md) for configuration.
+
+**⚠️ Important**: If emails are not working, check the [Email Troubleshooting Guide](EMAIL_TROUBLESHOOTING.md) first.
 
 ## 🛠️ Tech Stack
 
@@ -195,7 +226,7 @@ All data is stored in browser localStorage for demo purposes:
 ## 🐛 Known Limitations
 
 - Data persists only in browser (localStorage)
-- No real email/SMS notifications (demo mode)
+- Email notifications require separate email server (see [Email Troubleshooting Guide](EMAIL_TROUBLESHOOTING.md))
 - No actual insurance API integration (demo forms)
 - No file upload for medical reports (URL-based only)
 - No real user authentication backend

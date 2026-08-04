@@ -15,6 +15,7 @@ import AdminLoginPage from "./pages/AdminLoginPage";
 import AdminDashboard from "./pages/AdminDashboard";
 import PatientPortalLoginPage from "./pages/PatientPortalLoginPage";
 import PatientPortalDashboard from "./pages/PatientPortalDashboard";
+import Chatbot from "@/components/Chatbot";
 
 const queryClient = new QueryClient();
 
@@ -23,6 +24,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
+      <Chatbot />
       <BrowserRouter>
         <ScrollToTop />
         <Routes>

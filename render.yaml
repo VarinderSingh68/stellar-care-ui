@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: stellar-care-ui
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node email-server.cjs
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: VITE_API_URL
+        value: ""

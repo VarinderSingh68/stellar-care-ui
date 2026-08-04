@@ -1,0 +1,23 @@
+[
+  {
+    "id": "2026-08-02T09:37:14.505Z",
+    "patientName": "varinder singh",
+    "patientEmail": "varindersinghofficial338@gmail.com",
+    "patientPhone": "+916283968189",
+    "appointmentDate": "Tuesday, August 4, 2026",
+    "appointmentTime": "3:30 PM",
+    "reason": "yyuyih",
+    "bookingDate": "2026-08-02T09:37:14.505Z"
+  },
+  {
+    "id": "1785822867485-padec2",
+    "patientName": "varinder singh",
+    "patientEmail": "varindersinghofficial338@gmail.com",
+    "patientPhone": "+916283968189",
+    "appointmentDate": "Thursday, August 20, 2026",
+    "appointmentTime": "4:00 PM",
+    "reason": "mn,m,m",
+    "status": "scheduled",
+    "createdAt": "2026-08-04T05:54:27.485Z"
+  }
+]

@@ -2,17 +2,41 @@ const express = require('express');
 const nodemailer = require('nodemailer');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
-app.use(cors());
+app.use(express.json({ limit: '50mb' })); // Increased limit for potential large PDF data
+app.use(cors()); // Enable CORS for all routes
+
+const distPath = path.join(__dirname, 'dist');
+const indexPath = path.join(distPath, 'index.html');
+
+// Serve static files from the 'dist' directory
+app.use(express.static(distPath));
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'stellar-care-ui' });
+});
+
+const BOOKINGS_FILE = 'bookings.json';
+
+// Create bookings.json if it doesn't exist
+if (!fs.existsSync(BOOKINGS_FILE)) {
+  fs.writeFileSync(BOOKINGS_FILE, '[]', 'utf8');
+}
 
 // Email configuration
-const emailUser = process.env.EMAIL_USER || 'ngw.designer@gmail.com';
-const emailPassword = (process.env.EMAIL_PASSWORD || 'xvqe hegc yscu sszt').replace(/\s/g, '');
+const emailUser = process.env.EMAIL_USER;
+const emailPassword = (process.env.EMAIL_PASSWORD || '').replace(/\s/g, '');
+
+if (!emailUser || !emailPassword) {
+  console.error("FATAL ERROR: EMAIL_USER or EMAIL_PASSWORD is not defined in the environment.");
+  console.error("Please create a .env file in the root of the project and add these variables.");
+  process.exit(1); // Exit with an error code
+}
 
 console.log('Setting up email with:', emailUser);
 
@@ -43,14 +67,6 @@ function wrapText(value, maxLength) {
   return lines;
 }
 
-function escapePdfText(value) {
-  return sanitizeText(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-}
-
-function pdfText(text, x, y, size = 12) {
-  return `${size} Tf 1 0 0 1 ${x} ${y} Tm (${escapePdfText(text)}) Tj ET`;
-}
-
 function buildBasicPdfBuffer(lines) {
   const contentLines = [
     'BT',
@@ -70,12 +86,18 @@ function buildBasicPdfBuffer(lines) {
     '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
     `5 0 obj\n<< /Length ${Buffer.byteLength(contentStream, 'utf8')} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
   ];
+  return buildPdfFromObjects(objects);
+}
+
+function buildPdfFromObjects(objects) {
   let pdf = '%PDF-1.4\n';
   const offsets = [0];
+
   objects.forEach((obj) => {
     offsets.push(Buffer.byteLength(pdf, 'utf8'));
     pdf += obj;
   });
+
   const xrefOffset = Buffer.byteLength(pdf, 'utf8');
   pdf += `xref\n0 ${objects.length + 1}\n`;
   pdf += '0000000000 65535 f \n';
@@ -83,26 +105,243 @@ function buildBasicPdfBuffer(lines) {
     pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
   }
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
   return Buffer.from(pdf, 'utf8');
 }
 
-function generateFollowUpPdfBuffer({ patientName, patientEmail, patientPhone, title, description, dueDate, type }) {
-  const lines = [
-    'Follow-up Reminder',
-    '-------------------',
-    `Patient: ${sanitizeText(patientName)}`,
-    `Email: ${sanitizeText(patientEmail)}`,
-    `Phone: ${sanitizeText(patientPhone) || 'N/A'}`,
-    `Type: ${sanitizeText(type)}`,
-    `Due Date: ${formatDateText(dueDate)}`,
-    '',
-    'Instructions:',
-    ...wrapText(sanitizeText(description) || 'No details provided.', 70),
-  ];
-  return buildBasicPdfBuffer(lines);
+// Professional PDF generation functions
+function escapePdfText(value) {
+  return sanitizeText(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
-function generateReportPdfBuffer({ patientName, patientEmail, patientPhone, reportType, title, description, date }) {
+function pdfText(text, x, y, font = 'F1', size = 12, color = [0, 0, 0]) {
+  return `${color.join(' ')} rg\nBT /${font} ${size} Tf 1 0 0 1 ${x} ${y} Tm (${escapePdfText(text)}) Tj ET`;
+}
+
+function pdfLine(x1, y1, x2, y2, width = 1) {
+  return `${width} w ${x1} ${y1} m ${x2} ${y2} l S`;
+}
+
+function pdfRect(x, y, width, height, fillRgb = null, strokeRgb = null, lineWidth = 1) {
+  const commands = [];
+  if (fillRgb) commands.push(`${fillRgb.join(' ')} rg`);
+  if (strokeRgb) commands.push(`${strokeRgb.join(' ')} RG`);
+  commands.push(`${lineWidth} w`);
+  commands.push(`${x} ${y} ${width} ${height} re`);
+  if (fillRgb && strokeRgb) commands.push('B');
+  else if (fillRgb) commands.push('f');
+  else commands.push('S');
+  return commands.join('\n');
+}
+
+function formatMoneyText(value) {
+  if (!value) return '';
+  const amount = Number(value);
+  return Number.isNaN(amount) ? sanitizeText(value) : `INR ${amount.toLocaleString('en-IN')}`;
+}
+
+function generatePrescriptionPdfBuffer({
+  patientName,
+  patientEmail,
+  patientPhone,
+  gender,
+  age,
+  suffering,
+  prescription,
+  prescriptionDate,
+  visitDate,
+  totalFees,
+  amountPaid,
+  paymentStatus,
+}) {
+  const dateText = prescriptionDate ? new Date(prescriptionDate).toLocaleString() : new Date().toLocaleString();
+  const visitDateText = formatDateText(visitDate) || dateText;
+  const genderAgeText = [sanitizeText(gender), sanitizeText(age)].filter(Boolean).join(' / ') || '-';
+  const feesText = formatMoneyText(totalFees) || '-';
+  const paidText = formatMoneyText(amountPaid) || '-';
+  const statusText = sanitizeText(paymentStatus) || '-';
+  const diagnosisLines = wrapText(sanitizeText(suffering) || '-', 74).slice(0, 2);
+  const prescriptionLines = String(prescription || '')
+    .split(/\r?\n/)
+    .flatMap((line) => wrapText(sanitizeText(line), 70))
+    .slice(0, 14);
+
+  const contentLines = [
+    // Header with blue background
+    pdfRect(0, 770, 595, 72, [0.12, 0.35, 0.74]),
+    // Border
+    pdfRect(24, 24, 547, 794, null, [0.86, 0.9, 0.95], 1.2),
+    // Patient details box
+    pdfRect(36, 670, 523, 84, [0.95, 0.97, 1], [0.82, 0.87, 0.95], 1),
+    // Diagnosis box
+    pdfRect(36, 612, 523, 62, [0.98, 0.99, 1], [0.86, 0.9, 0.95], 1),
+    // Prescription area
+    pdfRect(36, 110, 523, 485, null, [0.82, 0.87, 0.95], 1),
+    
+    // Clinic header
+    pdfText('CardioVita Medical Center', 42, 810, 'F2', 22, [1, 1, 1]),
+    pdfText('Medical Prescription', 42, 790, 'F1', 11, [0.92, 0.97, 1]),
+    
+    // Doctor info
+    pdfText(`Doctor: Dr. Rana`, 410, 810, 'F2', 14, [1, 1, 1]),
+    pdfText(`Phone: 6283968189`, 410, 790, 'F1', 11, [0.92, 0.97, 1]),
+    pdfText('New Mata Gujri Enclave, Janta Nagar, Kharar', 42, 774, 'F1', 9, [0.92, 0.97, 1]),
+    pdfText('Punjab 140301', 42, 761, 'F1', 9, [0.92, 0.97, 1]),
+    
+    // Patient Details section
+    pdfText('Patient Details', 48, 730, 'F2', 14, [0.16, 0.22, 0.35]),
+    pdfText(`Name: ${sanitizeText(patientName)}`, 48, 708, 'F1', 11, [0.1, 0.1, 0.1]),
+    pdfText(`Phone: ${sanitizeText(patientPhone) || '-'}`, 300, 708, 'F1', 11, [0.1, 0.1, 0.1]),
+    pdfText(`Email: ${sanitizeText(patientEmail) || '-'}`, 48, 690, 'F1', 10, [0.2, 0.2, 0.2]),
+    pdfText(`Visit: ${sanitizeText(visitDateText)}`, 300, 690, 'F1', 10, [0.2, 0.2, 0.2]),
+    pdfText(`Gender/Age: ${genderAgeText}`, 48, 674, 'F1', 10, [0.2, 0.2, 0.2]),
+    pdfText(`Fees: ${feesText} | Paid: ${paidText}`, 300, 674, 'F1', 10, [0.2, 0.2, 0.2]),
+    pdfText(`Payment: ${statusText}`, 48, 660, 'F1', 9, [0.28, 0.28, 0.28]),
+    pdfText(`Generated: ${sanitizeText(dateText)}`, 300, 660, 'F1', 9, [0.28, 0.28, 0.28]),
+    
+    // Diagnosis section
+    pdfText('Diagnosis', 48, 650, 'F2', 13, [0.16, 0.22, 0.35]),
+    pdfText(diagnosisLines[0] || '-', 48, 632, 'F1', 11, [0.1, 0.1, 0.1]),
+    pdfText(diagnosisLines[1] || '', 48, 616, 'F1', 11, [0.1, 0.1, 0.1]),
+    
+    // Rx symbol (large, blue)
+    pdfText('Rx', 48, 576, 'F2', 24, [0.12, 0.35, 0.74]),
+    
+    // Prescription lines
+    pdfLine(42, 598, 553, 598, 1),
+    pdfLine(84, 568, 535, 568, 0.7),
+    pdfLine(84, 540, 535, 540, 0.7),
+    pdfLine(84, 512, 535, 512, 0.7),
+    pdfLine(84, 484, 535, 484, 0.7),
+    pdfLine(84, 456, 535, 456, 0.7),
+    pdfLine(84, 428, 535, 428, 0.7),
+    pdfLine(84, 400, 535, 400, 0.7),
+    pdfLine(84, 372, 535, 372, 0.7),
+    pdfLine(84, 344, 535, 344, 0.7),
+    pdfLine(84, 316, 535, 316, 0.7),
+    pdfLine(84, 288, 535, 288, 0.7),
+    pdfLine(84, 260, 535, 260, 0.7),
+    pdfLine(84, 232, 535, 232, 0.7),
+    pdfLine(84, 204, 535, 204, 0.7),
+    
+    // Signature area
+    pdfText('Signature', 430, 128, 'F1', 10, [0.35, 0.35, 0.35]),
+    pdfLine(392, 142, 540, 142, 1),
+    pdfText('Dr. Rana', 442, 116, 'F2', 12, [0.16, 0.22, 0.35]),
+    
+    // Footer
+    pdfText('CardioVita Medical Center', 42, 72, 'F2', 12, [0.16, 0.22, 0.35]),
+    pdfText('Address: New Mata Gujri Enclave, Janta Nagar, Kharar, Punjab 140301', 42, 56, 'F1', 9, [0.25, 0.25, 0.25]),
+    pdfText('Phone: 6283968189', 42, 40, 'F1', 9, [0.25, 0.25, 0.25]),
+  ];
+
+  // Add prescription lines
+  prescriptionLines.forEach((line, index) => {
+    const y = 548 - (index * 28);
+    contentLines.push(pdfText(line, 94, y, 'F1', 12, [0.08, 0.08, 0.08]));
+  });
+
+  const contentStream = contentLines.join('\n');
+
+  const objects = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>\nendobj\n',
+    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
+    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n',
+    `6 0 obj\n<< /Length ${Buffer.byteLength(contentStream, 'utf8')} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
+  ];
+
+  return buildPdfFromObjects(objects);
+}
+
+function generateFollowUpPdfBuffer({ patientName, patientEmail, patientPhone, title, description, dueDate, type, clinicName, doctorName, clinicAddress, clinicPhone }) {
+  const dateText = new Date().toLocaleString();
+  const dueDateText = formatDateText(dueDate);
+  const descriptionLines = wrapText(sanitizeText(description) || 'No additional details provided.', 70);
+
+  const contentLines = [
+    // Header with blue background
+    pdfRect(0, 770, 595, 72, [0.12, 0.35, 0.74]),
+    // Border
+    pdfRect(24, 24, 547, 794, null, [0.86, 0.9, 0.95], 1.2),
+    // Patient details box
+    pdfRect(36, 670, 523, 84, [0.95, 0.97, 1], [0.82, 0.87, 0.95], 1),
+    // Task details box
+    pdfRect(36, 580, 523, 72, [0.98, 0.99, 1], [0.86, 0.9, 0.95], 1),
+    // Instructions area
+    pdfRect(36, 110, 523, 455, null, [0.82, 0.87, 0.95], 1),
+
+    // Clinic header
+    pdfText(clinicName, 42, 810, 'F2', 22, [1, 1, 1]),
+    pdfText('Follow-up Reminder', 42, 790, 'F1', 11, [0.92, 0.97, 1]),
+
+    // Doctor info
+    pdfText(`Doctor: Dr. Rana`, 410, 810, 'F2', 14, [1, 1, 1]),
+    pdfText(`Phone: 6283968189`, 410, 790, 'F1', 11, [0.92, 0.97, 1]),
+    pdfText('New Mata Gujri Enclave, Janta Nagar, Kharar', 42, 774, 'F1', 9, [0.92, 0.97, 1]),
+    pdfText('Punjab 140301', 42, 761, 'F1', 9, [0.92, 0.97, 1]),
+    
+    // Patient Details section
+    pdfText('Patient Details', 48, 730, 'F2', 14, [0.16, 0.22, 0.35]),
+    pdfText(`Name: ${sanitizeText(patientName)}`, 48, 708, 'F1', 11, [0.1, 0.1, 0.1]),
+    pdfText(`Phone: ${sanitizeText(patientPhone) || '-'}`, 300, 708, 'F1', 11, [0.1, 0.1, 0.1]),
+    pdfText(`Email: ${sanitizeText(patientEmail) || '-'}`, 48, 690, 'F1', 10, [0.2, 0.2, 0.2]),
+    pdfText(`Generated: ${sanitizeText(dateText)}`, 300, 690, 'F1', 10, [0.2, 0.2, 0.2]),
+    
+    // Task Details section
+    pdfText('Task Details', 48, 640, 'F2', 14, [0.16, 0.22, 0.35]),
+    pdfText(`Task: ${sanitizeText(title)}`, 48, 620, 'F1', 11, [0.1, 0.1, 0.1]),
+    pdfText(`Type: ${sanitizeText(type)}`, 48, 604, 'F1', 10, [0.2, 0.2, 0.2]),
+    pdfText(`Due Date: ${dueDateText}`, 300, 604, 'F1', 10, [0.2, 0.2, 0.2]),
+    
+    // Instructions header (large, blue)
+    pdfText('Instructions', 48, 560, 'F2', 18, [0.12, 0.35, 0.74]),
+
+    // Instructions lines
+    pdfLine(42, 548, 553, 548, 1),
+    pdfLine(84, 520, 535, 520, 0.7),
+    pdfLine(84, 492, 535, 492, 0.7),
+    pdfLine(84, 464, 535, 464, 0.7),
+    pdfLine(84, 436, 535, 436, 0.7),
+    pdfLine(84, 408, 535, 408, 0.7),
+    pdfLine(84, 380, 535, 380, 0.7),
+    pdfLine(84, 352, 535, 352, 0.7),
+    pdfLine(84, 324, 535, 324, 0.7),
+    pdfLine(84, 296, 535, 296, 0.7),
+    pdfLine(84, 268, 535, 268, 0.7),
+    pdfLine(84, 240, 535, 240, 0.7),
+    pdfLine(84, 212, 535, 212, 0.7),
+    pdfLine(84, 184, 535, 184, 0.7),
+    pdfLine(84, 156, 535, 156, 0.7),
+
+    // Footer
+    pdfText('CardioVita Medical Center', 42, 72, 'F2', 12, [0.16, 0.22, 0.35]),
+    pdfText('Address: New Mata Gujri Enclave, Janta Nagar, Kharar, Punjab 140301', 42, 56, 'F1', 9, [0.25, 0.25, 0.25]),
+    pdfText('Phone: 6283968189', 42, 40, 'F1', 9, [0.25, 0.25, 0.25]),
+  ];
+
+  // Add description lines
+  descriptionLines.forEach((line, index) => {
+    const y = 520 - (index * 28);
+    contentLines.push(pdfText(`• ${line}`, 94, y, 'F1', 12, [0.08, 0.08, 0.08]));
+  });
+
+  const contentStream = contentLines.join('\n');
+
+  const objects = [
+    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>\nendobj\n',
+    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
+    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n',
+    `6 0 obj\n<< /Length ${Buffer.byteLength(contentStream, 'utf8')} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
+  ];
+
+  return buildPdfFromObjects(objects);
+}
+
+function generateReportPdfBuffer({ patientName, patientEmail, patientPhone, reportType, title, description, date, clinicName, doctorName, clinicAddress, clinicPhone }) {
   const lines = [
     'Medical Report',
     '---------------',
@@ -119,7 +358,7 @@ function generateReportPdfBuffer({ patientName, patientEmail, patientPhone, repo
   return buildBasicPdfBuffer(lines);
 }
 
-function generateBillingPdfBuffer({ patientName, patientEmail, patientPhone, claimId, insuranceProvider, policyNumber, treatmentDate, amount, status, notes, submissionDate }) {
+function generateBillingPdfBuffer({ patientName, patientEmail, patientPhone, claimId, insuranceProvider, policyNumber, treatmentDate, amount, status, notes, submissionDate, clinicName, doctorName, clinicAddress, clinicPhone }) {
   const lines = [
     'Insurance Billing Summary',
     '-------------------------',
@@ -140,7 +379,7 @@ function generateBillingPdfBuffer({ patientName, patientEmail, patientPhone, cla
   return buildBasicPdfBuffer(lines);
 }
 
-// Create transporter
+// Create Nodemailer transporter
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -158,10 +397,54 @@ transporter.verify((error, success) => {
   }
 });
 
+// --- Removed custom SMTP client functions (waitForResponse, smtpCommand, sendMail) ---
+// The Nodemailer 'transporter' will be used directly for sending emails.
+// ---
+
+// Get all bookings
+app.get('/api/bookings', (req, res) => {
+  fs.readFile(BOOKINGS_FILE, 'utf8', (err, data) => {
+    if (err) {
+      console.error('❌ Error reading bookings file:', err.message);
+      return res.status(500).json({ success: false, message: 'Failed to read bookings.' });
+    }
+    res.json(JSON.parse(data));
+  });
+});
+
 // Send booking confirmation email
 app.post('/api/send-booking', async (req, res) => {
   try {
     const { patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason } = req.body;
+
+    // Save booking to file
+    fs.readFile(BOOKINGS_FILE, 'utf8', (err, data) => {
+      if (err) {
+        console.error('❌ Error reading bookings file:', err.message);
+        // Still try to send email
+      } else {
+        const bookings = JSON.parse(data);
+        const newBooking = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          patientName,
+          patientEmail,
+          patientPhone,
+          appointmentDate,
+          appointmentTime,
+          reason,
+          status: 'scheduled',
+          createdAt: new Date().toISOString(),
+        };
+        bookings.push(newBooking);
+        fs.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8', (err) => {
+          if (err) {
+            console.error('❌ Error writing to bookings file:', err.message);
+          } else {
+            console.log('✅ Booking saved to file.');
+          }
+        });
+      }
+    });
 
     console.log('📧 Sending booking emails for:', patientName);
 
@@ -214,8 +497,8 @@ app.post('/api/send-booking', async (req, res) => {
     };
 
     // Send emails
-    const patientResult = await transporter.sendMail(patientMailOptions);
-    const adminResult = await transporter.sendMail(adminMailOptions);
+    const patientResult = await transporter.sendMail(patientMailOptions); // Use Nodemailer transporter
+    const adminResult = await transporter.sendMail(adminMailOptions);     // Use Nodemailer transporter
 
     console.log('✅ Emails sent successfully');
     console.log('   Patient email:', patientResult.response);
@@ -225,6 +508,154 @@ app.post('/api/send-booking', async (req, res) => {
   } catch (error) {
     console.error('❌ Email error:', error.message);
     res.status(500).json({ success: false, message: 'Failed to send email: ' + error.message });
+  }
+});
+
+// Send prescription email
+app.post('/api/send-prescription', async (req, res) => {
+  try {
+    const {
+      patientName,
+      patientEmail,
+      patientPhone,
+      gender,
+      age,
+      address,
+      suffering,
+      prescription,
+      prescriptionDate,
+      visitDate,
+      totalFees,
+      amountPaid,
+      paymentStatus,
+      nextAppointmentDate,
+      notes,
+    } = req.body;
+
+    const trimmedEmail = String(patientEmail || '').trim();
+
+    // Validate required fields
+    if (!patientName || !suffering || !prescription) {
+      return res.status(400).json({ success: false, message: 'Missing required prescription fields.' });
+    }
+
+    // Validate email
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      return res.status(400).json({ success: false, message: 'Valid patient email is required to send the prescription.' });
+    }
+
+    console.log('📧 Sending prescription email for:', patientName);
+
+    // Generate PDF buffer
+    const pdfBuffer = generatePrescriptionPdfBuffer({
+      patientName,
+      patientEmail: trimmedEmail,
+      patientPhone,
+      gender,
+      age,
+      suffering,
+      prescription,
+      prescriptionDate,
+      visitDate,
+      totalFees,
+      amountPaid,
+      paymentStatus,
+    });
+    
+    // Nodemailer expects content as a Buffer, not base64 string
+    const attachmentContent = pdfBuffer;
+
+    // Store the PDF locally and get public/local URLs
+    const prescriptionFilename = `prescription-${sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`;
+
+    // Build patient email HTML
+    const patientDetailRows = [
+      ['Visit Date', formatDateText(visitDate || prescriptionDate)],
+      ['Gender', gender],
+      ['Age', age],
+      ['Phone', patientPhone],
+      ['Address', address],
+      ['Total Fees', totalFees ? `₹${totalFees}` : ''],
+      ['Amount Paid', amountPaid ? `₹${amountPaid}` : ''],
+      ['Payment Status', paymentStatus],
+      ['Next Appointment', formatDateText(nextAppointmentDate)],
+      ['Notes', notes],
+    ].filter(([, value]) => sanitizeText(value));
+
+    const detailListHtml = patientDetailRows
+      .map(([label, value]) => `<p><strong>${label}:</strong> ${sanitizeText(value)}</p>`)
+      .join('');
+
+    const patientHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2563eb;">Your CardioVita Prescription</h2>
+        <p>Dear ${patientName},</p>
+        <p>Your prescription has been prepared. Please find your prescription PDF attached to this email.</p>
+        <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
+          <p><strong>Diagnosis:</strong> ${suffering}</p>
+          ${detailListHtml}
+        </div>
+        <p>Please follow the prescription as advised and contact us for any urgent concern.</p>
+        <p style="margin-top: 20px;">Best regards,<br><strong>CardioVita Medical Team</strong></p>
+      </div>
+    `;
+
+    // Email to patient with PDF attachment
+    const patientMailOptions = {
+      from: emailUser,
+      to: trimmedEmail,
+      subject: 'CardioVita - Your Prescription PDF',
+      html: patientHtml,
+      attachments: [
+        {
+          filename: prescriptionFilename,
+          content: attachmentContent, // Use Buffer directly
+          contentType: 'application/pdf',
+        },
+      ],
+    };
+
+    // Email to admin
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2563eb;">Prescription Sent - ${patientName}</h2>
+        <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
+          <p><strong>Patient Name:</strong> ${patientName}</p>
+          <p><strong>Email:</strong> <a href="mailto:${trimmedEmail}">${trimmedEmail}</a></p>
+          <p><strong>Phone:</strong> ${sanitizeText(patientPhone) || 'N/A'}</p>
+          <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
+          <p><strong>Diagnosis:</strong> ${suffering}</p>
+          <p><strong>Prescription Date:</strong> ${formatDateText(prescriptionDate)}</p>
+          <p><strong>Visit Date:</strong> ${formatDateText(visitDate)}</p>
+        </div>
+      </div>
+    `;
+
+    const adminMailOptions = {
+      from: emailUser,
+      to: 'ngw.designer@gmail.com',
+      subject: `Prescription Sent - ${patientName}`,
+      html: adminHtml,
+    };
+
+    // Send emails
+    await transporter.sendMail(patientMailOptions); // Use Nodemailer transporter
+    await transporter.sendMail(adminMailOptions);     // Use Nodemailer transporter
+
+    console.log('✅ Prescription emails sent successfully');
+    console.log('   Patient email:', trimmedEmail);
+    console.log('   Admin notification sent');
+
+    res.json({
+      success: true,
+      message: 'Prescription email sent successfully. PDF attached.',
+    });
+  } catch (error) {
+    console.error('❌ Prescription email error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send prescription email: ' + error.message,
+    });
   }
 });
 
@@ -419,11 +850,18 @@ app.post('/api/send-billing', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: '✅ CardioVita Email Server Running', port: process.env.PORT || 5000 });
+  res.sendFile(indexPath);
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`\n🚀 Email server running on http://localhost:${PORT}`);
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
+  res.sendFile(indexPath);
+});
+
+const PORT = Number(process.env.PORT) || 5004;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🚀 Email server running on http://0.0.0.0:${PORT}`);
   console.log('   Sending emails to: ngw.designer@gmail.com\n');
 });
