@@ -27,19 +27,31 @@ export const getBookings = async (): Promise<Booking[]> => {
 };
 
 export const saveBookingAndNotify = async (booking: Omit<Booking, 'id' | 'bookingDate'>): Promise<{ success: boolean; message: string }> => {
+  const baseUrl = API_CONFIG.baseUrl?.trim();
+  if (!baseUrl) {
+    return {
+      success: false,
+      message: "Backend URL is not configured. Please set VITE_API_URL.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = 15000;
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.booking}`, {
+    const response = await fetch(`${baseUrl}${API_CONFIG.endpoints.booking}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(booking),
+      signal: controller.signal,
     });
-    
+
     const payload = await response.json().catch(() => null);
 
     if (response.ok && payload?.success) {
-       // Dispatch event for real-time updates
       if (typeof window !== "undefined") {
         window.dispatchEvent(new Event("bookingUpdated"));
       }
@@ -49,23 +61,33 @@ export const saveBookingAndNotify = async (booking: Omit<Booking, 'id' | 'bookin
       };
     }
 
-    // Handle non-200 responses but with a JSON payload
     if (payload) {
-      return { success: false, message: payload.message || "An unknown error occurred." };
+      return {
+        success: false,
+        message: payload.message || "An unknown error occurred while booking.",
+      };
     }
-    
-    // Handle fetch errors or non-JSON responses
+
     return {
       success: false,
       message: "Failed to save booking. Please try again shortly.",
     };
   } catch (error) {
     console.error("Booking save and notify error:", error);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return {
+        success: false,
+        message: "Booking request timed out. Please check the backend status and try again.",
+      };
+    }
+
     let message = "An unexpected error occurred. Please try again.";
-     if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-      message = "Could not connect to the server. Is it running? Please try again later.";
+    if (error instanceof TypeError && error.message.includes("Failed to fetch")) {
+      message = "Could not connect to the server. Is it running? Please check the backend status.";
     }
     return { success: false, message };
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 };
 

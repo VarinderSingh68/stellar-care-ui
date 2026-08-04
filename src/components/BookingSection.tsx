@@ -54,7 +54,7 @@ const BookingSection = () => {
     }
 
     setIsSubmitting(true);
-    setMessage("");
+    setMessage("Sending appointment request...");
 
     try {
       const bookingData = {
