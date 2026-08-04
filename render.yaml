@@ -3,7 +3,7 @@ services:
     name: stellar-care-api
     env: node
     plan: free
-    buildCommand: npm install --include=dev && npm run build
+    buildCommand: npm install --include=dev
     startCommand: node email-server.cjs
     envVars:
       - key: NODE_ENV

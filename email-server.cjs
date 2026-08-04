@@ -11,14 +11,119 @@ const app = express();
 app.use(express.json({ limit: '50mb' })); // Increased limit for potential large PDF data
 app.use(cors()); // Enable CORS for all routes
 
-const distPath = path.join(__dirname, 'dist');
-const indexPath = path.join(distPath, 'index.html');
-
-// Serve static files from the 'dist' directory
-app.use(express.static(distPath));
-
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'stellar-care-ui' });
+  res.json({ status: 'ok', service: 'email-server' });
+});
+
+app.get('/', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Email Server Status</title>
+        <style>
+          body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            color: #fff;
+            font-family: Inter, system-ui, sans-serif;
+          }
+          .card {
+            width: min(720px, calc(100% - 32px));
+            padding: 32px;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 24px;
+            background: rgba(15, 23, 42, 0.96);
+            box-shadow: 0 35px 60px rgba(0, 0, 0, 0.35);
+          }
+          .title {
+            margin: 0 0 16px;
+            font-size: 1.75rem;
+            letter-spacing: -0.03em;
+          }
+          .status {
+            display: inline-flex;
+            gap: 0.75rem;
+            align-items: center;
+            margin-bottom: 24px;
+          }
+          .dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 9999px;
+            background: #f59e0b;
+            box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
+          }
+          .info {
+            font-size: 0.95rem;
+            color: #cbd5e1;
+            line-height: 1.8;
+          }
+          .info strong { color: #fff; }
+          .pre {
+            margin: 24px 0 0;
+            padding: 18px;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.04);
+            color: #e2e8f0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+            overflow-x: auto;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1 class="title">Email Server Status</h1>
+          <div class="status">
+            <span class="dot" id="status-dot"></span>
+            <span id="status-label">Checking email server...</span>
+          </div>
+          <div class="info" id="status-message">Connecting to backend health endpoint.</div>
+          <pre class="pre" id="status-details"></pre>
+        </div>
+        <script>
+          const statusDot = document.getElementById('status-dot');
+          const statusLabel = document.getElementById('status-label');
+          const statusMessage = document.getElementById('status-message');
+          const statusDetails = document.getElementById('status-details');
+
+          fetch('/health', { cache: 'no-store' })
+            .then(async (response) => {
+              const json = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                throw new Error('HTTP ' + response.status);
+              }
+              statusDot.style.background = '#22c55e';
+              statusDot.style.boxShadow = '0 0 0 4px rgba(34,197,94,0.18)';
+              statusLabel.textContent = 'Email server online';
+              statusMessage.textContent = 'The email server is running and ready to accept API calls.';
+              statusDetails.textContent = JSON.stringify(json, null, 2);
+            })
+            .catch((error) => {
+              statusDot.style.background = '#f97316';
+              statusDot.style.boxShadow = '0 0 0 4px rgba(249,115,22,0.18)';
+              statusLabel.textContent = 'Email server offline';
+              statusMessage.textContent = 'Unable to reach the backend health endpoint.';
+              statusDetails.textContent = error?.message || 'Unknown error';
+            });
+        </script>
+      </body>
+    </html>
+  `);
+});
+
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ success: false, message: 'API route not found.' });
+  }
+  res.redirect('/');
 });
 
 const BOOKINGS_FILE = 'bookings.json';
