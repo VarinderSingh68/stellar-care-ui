@@ -484,19 +484,31 @@ function generateBillingPdfBuffer({ patientName, patientEmail, patientPhone, cla
   return buildBasicPdfBuffer(lines);
 }
 
-// Create Nodemailer transporter
+const cleanedEmailPassword = (emailPassword || '').replace(/\s+/g, '');
+const cleanedEmailUser = (emailUser || '').trim();
+
+// Create Nodemailer transporter using Gmail SMTP explicitly
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
   auth: {
-    user: emailUser,
-    pass: emailPassword,
+    user: cleanedEmailUser,
+    pass: cleanedEmailPassword,
+  },
+  tls: {
+    rejectUnauthorized: false,
   },
 });
 
 // Test email connection
 transporter.verify((error, success) => {
   if (error) {
-    console.log('❌ Email server error:', error.message);
+    console.error('❌ Email server error:', error.message);
+    console.error('   EMAIL_USER set:', !!cleanedEmailUser, 'EMAIL_PASSWORD set:', !!cleanedEmailPassword);
+    if (!cleanedEmailPassword) {
+      console.error('   Hint: EMAIL_PASSWORD appears empty after trimming spaces. Use a valid Gmail app password.');
+    }
   } else {
     console.log('✅ Email server ready to send');
   }
