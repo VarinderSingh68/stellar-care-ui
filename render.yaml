@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: stellar-care-ui
+    name: stellar-care-api
     env: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: node email-server.cjs
     envVars:
       - key: NODE_ENV
@@ -14,5 +14,11 @@ services:
         sync: false
       - key: EMAIL_PASSWORD
         sync: false
+
+  - type: static
+    name: stellar-care-ui
+    buildCommand: npm install --include=dev && npm run build
+    staticPublishPath: dist
+    envVars:
       - key: VITE_API_URL
-        value: ""
+        value: https://stellar-care-api.onrender.com

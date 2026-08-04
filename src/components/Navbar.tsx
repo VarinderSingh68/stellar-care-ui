@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Heart, Menu, X, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link, useLocation } from "react-router-dom";
+import BackendStatus from "@/components/BackendStatus";
 import { cn } from "@/lib/utils";
 
 const navLinks = [
@@ -52,6 +53,7 @@ const Navbar = () => {
         </div>
 
         <div className="hidden md:flex items-center gap-3">
+          <BackendStatus />
           <a href="tel:+919041481946" className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-primary transition-colors">
             <Phone className="w-4 h-4" />
             090414 81946
