@@ -1,4 +1,4 @@
-const localFallbackBaseUrl = 'http://localhost:5004';
+const localFallbackBaseUrl = 'http://localhost:5000';
 const sameOriginFallbackBaseUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
 export const API_CONFIG = {

@@ -1,9 +1,9 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ADMIN_PASSWORD, ADMIN_USERNAME, getAdminCredentials, loginAdmin } from "@/lib/admin";
+import { ADMIN_PASSWORD, ADMIN_USERNAME, getAdminCredentials, isAdminLoggedIn, loginAdmin } from "@/lib/admin";
 
 const AdminLoginPage = () => {
   const [username, setUsername] = useState("");
@@ -13,6 +13,12 @@ const AdminLoginPage = () => {
   const savedCredentials = getAdminCredentials();
   const isUsingDefaultCredentials =
     savedCredentials.username === ADMIN_USERNAME && savedCredentials.password === ADMIN_PASSWORD;
+
+  useEffect(() => {
+    if (isAdminLoggedIn()) {
+      navigate("/admin/dashboard");
+    }
+  }, [navigate]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

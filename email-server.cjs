@@ -499,6 +499,10 @@ const transporter = nodemailer.createTransport({
   tls: {
     rejectUnauthorized: false,
   },
+  connectionTimeout: 20000,
+  greetingTimeout: 20000,
+  socketTimeout: 20000,
+  debug: false,
 });
 
 // Test email connection
@@ -531,7 +535,7 @@ app.get('/api/bookings', (req, res) => {
 
 async function sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason }) {
   try {
-    console.log('📧 Sending booking emails for:', patientName);
+    console.log('📧 Sending booking emails for:', patientName, 'to:', patientEmail);
 
     const patientMailOptions = {
       from: cleanedEmailUser,
@@ -630,13 +634,14 @@ app.post('/api/send-booking', async (req, res) => {
       }
     }
 
-    try {
-      await sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason });
-      res.json({ success: true, message: 'Booking confirmed and emails sent.' });
-    } catch (emailError) {
-      console.error('❌ Booking processed but email failed:', emailError?.message || emailError);
-      res.status(500).json({ success: false, message: 'Booking saved but email delivery failed. Check server logs.' });
-    }
+    setImmediate(() => {
+      sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason })
+        .catch((emailError) => {
+          console.error('❌ Background email send failed:', emailError?.message || emailError);
+        });
+    });
+
+    res.json({ success: true, message: 'Booking received. Email notifications are being processed.' });
   } catch (error) {
     console.error('❌ Booking endpoint error:', error?.message || error);
     res.status(500).json({ success: false, message: 'Failed to process booking.' });

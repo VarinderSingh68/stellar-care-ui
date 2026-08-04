@@ -78,6 +78,7 @@ const BookingSection = () => {
           ? `✓ ${result.message}`
           : `⚠️ ${result.message}`
       );
+      console.log('Booking result', result);
 
       if (result.success) {
         setFormData({ patientName: "", patientEmail: "", patientPhone: "", reason: "" });

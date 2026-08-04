@@ -35,12 +35,15 @@ export const saveBookingAndNotify = async (booking: Omit<Booking, 'id' | 'bookin
     };
   }
 
+  const endpointUrl = `${baseUrl}${API_CONFIG.endpoints.booking}`;
+  console.log("Booking request URL:", endpointUrl);
+
   const controller = new AbortController();
-  const timeoutMs = 15000;
+  const timeoutMs = 60000;
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${baseUrl}${API_CONFIG.endpoints.booking}`, {
+    const response = await fetch(endpointUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
