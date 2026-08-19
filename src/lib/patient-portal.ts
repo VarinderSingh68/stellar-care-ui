@@ -266,10 +266,6 @@ export interface SendNotificationResult {
   pdfUrl?: string;
 }
 
-import { API_CONFIG } from "./config";
-
-// ... (rest of the file)
-
 export const sendFollowUpEmail = async (payload: {
   patientName: string;
   patientEmail: string;
