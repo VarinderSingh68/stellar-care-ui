@@ -119,13 +119,6 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.get('*', (req, res) => {
-  if (req.path.startsWith('/api/')) {
-    return res.status(404).json({ success: false, message: 'API route not found.' });
-  }
-  res.redirect('/');
-});
-
 const BOOKINGS_FILE = 'bookings.json';
 
 // Create bookings.json if it doesn't exist
@@ -531,6 +524,65 @@ app.get('/api/bookings', (req, res) => {
     }
     res.json(JSON.parse(data));
   });
+});
+
+// Create an appointment from the admin panel (stored alongside public bookings)
+app.post('/api/appointments', async (req, res) => {
+  try {
+    const { patientName, appointmentDate, appointmentTime, reason } = req.body;
+    if (!patientName || !appointmentDate || !appointmentTime || !reason) {
+      return res.status(400).json({ success: false, message: 'Missing required appointment fields.' });
+    }
+
+    const appointment = {
+      id: req.body.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      patientId: req.body.patientId,
+      patientName,
+      patientEmail: req.body.patientEmail,
+      patientPhone: req.body.patientPhone,
+      appointmentDate,
+      appointmentTime,
+      durationMinutes: req.body.durationMinutes || 30,
+      reason,
+      status: req.body.status || 'scheduled',
+      notes: req.body.notes,
+      bookingDate: req.body.bookingDate || new Date().toISOString(),
+    };
+
+    const data = await fs.promises.readFile(BOOKINGS_FILE, 'utf8').catch((err) => (err.code === 'ENOENT' ? '[]' : Promise.reject(err)));
+    const bookings = JSON.parse(data);
+    bookings.push(appointment);
+    await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8');
+
+    console.log('✅ Appointment saved:', appointment.patientName, appointment.appointmentDate, appointment.appointmentTime);
+    res.json({ success: true, message: 'Appointment saved.', appointment });
+  } catch (error) {
+    console.error('❌ Appointment create error:', error?.message || error);
+    res.status(500).json({ success: false, message: 'Failed to save appointment.' });
+  }
+});
+
+// Update an appointment (status, notes, etc.) by id
+app.put('/api/appointments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = await fs.promises.readFile(BOOKINGS_FILE, 'utf8').catch((err) => (err.code === 'ENOENT' ? '[]' : Promise.reject(err)));
+    const bookings = JSON.parse(data);
+    const index = bookings.findIndex((booking) => booking.id === id);
+
+    if (index === -1) {
+      return res.status(404).json({ success: false, message: 'Appointment not found.' });
+    }
+
+    bookings[index] = { ...bookings[index], ...req.body };
+    await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8');
+
+    console.log('✅ Appointment updated:', id, req.body.status ? `status -> ${req.body.status}` : '');
+    res.json({ success: true, message: 'Appointment updated.', appointment: bookings[index] });
+  } catch (error) {
+    console.error('❌ Appointment update error:', error?.message || error);
+    res.status(500).json({ success: false, message: 'Failed to update appointment.' });
+  }
 });
 
 async function sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason }) {
@@ -986,15 +1038,12 @@ app.post('/api/send-billing', async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => {
-  res.sendFile(indexPath);
-});
-
-app.get('*', (req, res, next) => {
+// Catch-all for anything not matched above. Registered last so it never shadows a real route.
+app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
-    return next();
+    return res.status(404).json({ success: false, message: 'API route not found.' });
   }
-  res.sendFile(indexPath);
+  res.redirect('/');
 });
 
 const PORT = Number(process.env.PORT) || 5004;

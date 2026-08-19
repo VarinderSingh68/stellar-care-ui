@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { API_CONFIG } from "@/lib/config";
 import {
   type AdminAppointment,
   type AdminPatient,
@@ -507,7 +508,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     };
 
     try {
-      const response = await fetch("/api/appointments", {
+      const response = await fetch(`${API_CONFIG.baseUrl}/api/appointments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(appointment),
@@ -528,7 +529,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
 
   const updateAppointmentStatus = async (appointmentId: string, status: AppointmentStatus) => {
     try {
-      const response = await fetch(`/api/appointments/${appointmentId}`, {
+      const response = await fetch(`${API_CONFIG.baseUrl}/api/appointments/${appointmentId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),

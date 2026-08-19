@@ -201,16 +201,17 @@ export const getBookings = async (): Promise<AdminAppointment[]> => {
     // Map server data to the AdminAppointment interface
     return bookings.map((b: any) => ({
       id: b.id,
+      patientId: b.patientId,
       patientName: b.patientName,
       patientEmail: b.patientEmail,
       patientPhone: b.patientPhone,
       appointmentDate: b.appointmentDate,
       appointmentTime: b.appointmentTime,
       reason: b.reason,
-      bookingDate: b.bookingDate,
-      // Add default values for fields not present in the booking data
-      status: "scheduled",
-      durationMinutes: 30, 
+      notes: b.notes,
+      bookingDate: b.bookingDate || b.createdAt,
+      status: b.status || "scheduled",
+      durationMinutes: b.durationMinutes || 30,
     }));
   } catch (error) {
     console.error("Error fetching bookings:", error);
