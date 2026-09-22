@@ -18,7 +18,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { API_CONFIG } from "@/lib/config";
 import {
   type AdminAppointment,
   type AdminPatient,
@@ -27,19 +26,22 @@ import {
   type ClinicSettings,
   type StaffMember,
   type TreatmentPlan,
-  getAdminCredentials,
+  changeAdminCredentials,
+  createAppointment,
+  DEFAULT_CLINIC_SETTINGS,
+  getAdminUsername,
   getBookings,
   getClinicalNotes,
   getClinicSettings,
   getPatients,
   getStaffMembers,
   getTreatmentPlans,
-  setAdminCredentials,
   setClinicalNotes,
   setClinicSettings,
   setPatients,
   setStaffMembers,
   setTreatmentPlans,
+  updateAppointmentStatus,
 } from "@/lib/admin";
 import {
   createConsentForm,
@@ -62,7 +64,7 @@ import {
   type MedicalReport,
   type PatientRecord,
 } from "@/lib/patient-portal";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   formatCurrencyValue,
   formatDateValue,
@@ -256,21 +258,25 @@ interface AdminOperationsPanelProps {
 }
 
 const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanelProps) => {
+  const queryClient = useQueryClient();
   const [message, setMessage] = useState("");
-  const [patients, setPatientsState] = useState<AdminPatient[]>(() => getPatients());
-  const [portalPatients, setPortalPatients] = useState<PatientRecord[]>(() => getPatientPortalRecords());
+
+  const { data: patients = [] } = useQuery<AdminPatient[]>({ queryKey: ["patients"], queryFn: getPatients });
+  const { data: portalPatients = [] } = useQuery<PatientRecord[]>({ queryKey: ["portalPatients"], queryFn: getPatientPortalRecords });
   const { data: appointments = [], refetch: refetchAppointments } = useQuery({
     queryKey: ["appointments"],
     queryFn: getBookings,
   });
-  const [treatmentPlans, setTreatmentPlansState] = useState<TreatmentPlan[]>(() => getTreatmentPlans());
-  const [clinicalNotes, setClinicalNotesState] = useState<ClinicalNote[]>(() => getClinicalNotes());
-  const [staffMembers, setStaffMembersState] = useState<StaffMember[]>(() => getStaffMembers());
-  const [followUps, setFollowUpsState] = useState<FollowUp[]>(() => getFollowUps());
-  const [consentForms, setConsentFormsState] = useState<ConsentForm[]>(() => getConsentForms());
-  const [medicalReports, setMedicalReportsState] = useState<MedicalReport[]>(() => getMedicalReports());
-  const [insuranceBillings, setInsuranceBillingsState] = useState<InsuranceBilling[]>(() => getInsuranceBillings());
-  const [settingsForm, setSettingsForm] = useState<ClinicSettings>(() => getClinicSettings());
+  const { data: treatmentPlans = [] } = useQuery<TreatmentPlan[]>({ queryKey: ["treatmentPlans"], queryFn: getTreatmentPlans });
+  const { data: clinicalNotes = [] } = useQuery<ClinicalNote[]>({ queryKey: ["clinicalNotes"], queryFn: getClinicalNotes });
+  const { data: staffMembers = [] } = useQuery<StaffMember[]>({ queryKey: ["staff"], queryFn: getStaffMembers });
+  const { data: followUps = [] } = useQuery<FollowUp[]>({ queryKey: ["followUps"], queryFn: getFollowUps });
+  const { data: consentForms = [] } = useQuery<ConsentForm[]>({ queryKey: ["consentForms"], queryFn: getConsentForms });
+  const { data: medicalReports = [] } = useQuery<MedicalReport[]>({ queryKey: ["medicalReports"], queryFn: getMedicalReports });
+  const { data: insuranceBillings = [] } = useQuery<InsuranceBilling[]>({ queryKey: ["insuranceBillings"], queryFn: getInsuranceBillings });
+  const { data: loadedSettings } = useQuery<ClinicSettings>({ queryKey: ["clinicSettings"], queryFn: getClinicSettings });
+  const { data: adminUsername = "" } = useQuery<string>({ queryKey: ["adminUsername"], queryFn: getAdminUsername });
+
   const [appointmentForm, setAppointmentForm] = useState(createDefaultAppointmentForm);
   const [calendarDate, setCalendarDate] = useState(getTodayInputValue());
   const [timelinePatientId, setTimelinePatientId] = useState("");
@@ -283,39 +289,51 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
   const [reportForm, setReportForm] = useState(createDefaultReportForm);
   const [billingForm, setBillingForm] = useState(createDefaultBillingForm);
   const [selectedTemplate, setSelectedTemplate] = useState("");
-  const [credentialForm, setCredentialForm] = useState(() => {
-    const credentials = getAdminCredentials();
-    return { username: credentials.username, password: "", confirmPassword: "" };
-  });
+  const [settingsForm, setSettingsForm] = useState<ClinicSettings>(DEFAULT_CLINIC_SETTINGS);
+  const [credentialForm, setCredentialForm] = useState({ username: "", password: "", confirmPassword: "" });
 
   useEffect(() => {
-    const refreshPatients = () => setPatientsState(getPatients());
+    if (loadedSettings) setSettingsForm(loadedSettings);
+  }, [loadedSettings]);
+
+  useEffect(() => {
+    setCredentialForm((prev) => ({ ...prev, username: adminUsername || prev.username }));
+  }, [adminUsername]);
+
+  useEffect(() => {
+    const refreshPatients = () => queryClient.invalidateQueries({ queryKey: ["patients"] });
     window.addEventListener("patientsUpdated", refreshPatients);
     return () => window.removeEventListener("patientsUpdated", refreshPatients);
-  }, []);
+  }, [queryClient]);
 
-  const savePatientList = (updated: AdminPatient[]) => {
-    setPatientsState(updated);
+  const savePatientList = async (updated: AdminPatient[]) => {
+    await setPatients(updated);
+    queryClient.invalidateQueries({ queryKey: ["patients"] });
   };
 
   const saveAppointmentList = () => {
     refetchAppointments();
   };
 
-  const saveTreatmentPlanList = (updated: TreatmentPlan[]) => {
-    setTreatmentPlans(updated);
-    setTreatmentPlansState(updated);
+  const saveTreatmentPlanList = async (updated: TreatmentPlan[]) => {
+    await setTreatmentPlans(updated);
+    queryClient.invalidateQueries({ queryKey: ["treatmentPlans"] });
   };
 
-  const saveClinicalNoteList = (updated: ClinicalNote[]) => {
-    setClinicalNotes(updated);
-    setClinicalNotesState(updated);
+  const saveClinicalNoteList = async (updated: ClinicalNote[]) => {
+    await setClinicalNotes(updated);
+    queryClient.invalidateQueries({ queryKey: ["clinicalNotes"] });
   };
 
-  const saveStaffList = (updated: StaffMember[]) => {
-    setStaffMembers(updated);
-    setStaffMembersState(updated);
+  const saveStaffList = async (updated: StaffMember[]) => {
+    await setStaffMembers(updated);
+    queryClient.invalidateQueries({ queryKey: ["staff"] });
   };
+
+  const refreshFollowUps = () => queryClient.invalidateQueries({ queryKey: ["followUps"] });
+  const refreshConsentForms = () => queryClient.invalidateQueries({ queryKey: ["consentForms"] });
+  const refreshMedicalReports = () => queryClient.invalidateQueries({ queryKey: ["medicalReports"] });
+  const refreshInsuranceBillings = () => queryClient.invalidateQueries({ queryKey: ["insuranceBillings"] });
 
   const allCarePatients = useMemo(
     () => [
@@ -485,7 +503,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     }));
   };
 
-  const createAppointment = async () => {
+  const createAppointmentHandler = async () => {
     const patientName = appointmentForm.patientName.trim();
     if (!patientName || !appointmentForm.appointmentDate || !appointmentForm.appointmentTime || !appointmentForm.reason.trim()) {
       setMessage("Add patient, date, time, and appointment reason.");
@@ -508,41 +526,23 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     };
 
     try {
-      const response = await fetch(`${API_CONFIG.baseUrl}/api/appointments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(appointment),
-      });
-
-      if (response.ok) {
-        saveAppointmentList();
-        setCalendarDate(appointment.appointmentDate);
-        setAppointmentForm(createDefaultAppointmentForm());
-        setMessage("Appointment added to the calendar.");
-      } else {
-        setMessage("Failed to create appointment.");
-      }
-    } catch {
-      setMessage("Error creating appointment.");
+      await createAppointment(appointment);
+      saveAppointmentList();
+      setCalendarDate(appointment.appointmentDate);
+      setAppointmentForm(createDefaultAppointmentForm());
+      setMessage("Appointment added to the calendar.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to create appointment.");
     }
   };
 
-  const updateAppointmentStatus = async (appointmentId: string, status: AppointmentStatus) => {
+  const updateAppointmentStatusHandler = async (appointmentId: string, status: AppointmentStatus) => {
     try {
-      const response = await fetch(`${API_CONFIG.baseUrl}/api/appointments/${appointmentId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
-
-      if (response.ok) {
-        saveAppointmentList();
-        setMessage(`Appointment marked as ${status}.`);
-      } else {
-        setMessage("Failed to update appointment status.");
-      }
-    } catch {
-      setMessage("Error updating appointment status.");
+      await updateAppointmentStatus(appointmentId, { status });
+      saveAppointmentList();
+      setMessage(`Appointment marked as ${status}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to update appointment status.");
     }
   };
 
@@ -554,7 +554,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     setMessage(sent ? "WhatsApp appointment reminder opened." : "No WhatsApp number found for this appointment.");
   };
 
-  const createTreatmentPlan = () => {
+  const createTreatmentPlan = async () => {
     const patient = patients.find((item) => item.id === planForm.patientId);
     if (!patient || !planForm.title.trim() || !planForm.diagnosis.trim() || !planForm.nextStep.trim()) {
       setMessage("Select a patient and add treatment plan, diagnosis, and next step.");
@@ -577,16 +577,16 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       createdAt: new Date().toISOString(),
     };
 
-    saveTreatmentPlanList([plan, ...treatmentPlans]);
+    await saveTreatmentPlanList([plan, ...treatmentPlans]);
     setPlanForm(createDefaultTreatmentPlanForm());
     setMessage("Treatment plan saved.");
   };
 
-  const updateTreatmentPlan = (planId: string, updates: Partial<TreatmentPlan>) => {
-    saveTreatmentPlanList(treatmentPlans.map((plan) => (plan.id === planId ? { ...plan, ...updates } : plan)));
+  const updateTreatmentPlan = async (planId: string, updates: Partial<TreatmentPlan>) => {
+    await saveTreatmentPlanList(treatmentPlans.map((plan) => (plan.id === planId ? { ...plan, ...updates } : plan)));
   };
 
-  const createClinicalNote = () => {
+  const createClinicalNote = async () => {
     const patient = patients.find((item) => item.id === noteForm.patientId);
     if (!patient || !noteForm.symptoms.trim() || !noteForm.diagnosis.trim()) {
       setMessage("Select a patient and add symptoms plus diagnosis.");
@@ -606,7 +606,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       createdAt: new Date().toISOString(),
     };
 
-    saveClinicalNoteList([note, ...clinicalNotes]);
+    await saveClinicalNoteList([note, ...clinicalNotes]);
     setNoteForm(createDefaultClinicalNoteForm());
     setMessage("Clinical note saved.");
   };
@@ -618,7 +618,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       return;
     }
 
-    createFollowUp({
+    await createFollowUp({
       patientId: patient.id,
       title: reminderForm.title.trim(),
       description: reminderForm.description.trim(),
@@ -627,7 +627,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       status: "pending",
       createdDate: new Date().toISOString(),
     });
-    setFollowUpsState(getFollowUps());
+    refreshFollowUps();
     setReminderForm(createDefaultReminderForm());
 
     if (patient.email) {
@@ -647,9 +647,9 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     setMessage(`Reminder created for ${patient.name}. No email on file to notify them.`);
   };
 
-  const markReminderCompleted = (followUpId: string) => {
-    updateFollowUp(followUpId, { status: "completed", completedDate: new Date().toISOString() });
-    setFollowUpsState(getFollowUps());
+  const markReminderCompleted = async (followUpId: string) => {
+    await updateFollowUp(followUpId, { status: "completed", completedDate: new Date().toISOString() });
+    refreshFollowUps();
     setMessage("Reminder marked as completed.");
   };
 
@@ -662,14 +662,14 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     setMessage(sent ? "WhatsApp reminder opened." : "No WhatsApp number found for this patient.");
   };
 
-  const createConsent = () => {
+  const createConsent = async () => {
     const patient = allCarePatients.find((item) => item.id === consentForm.patientId);
     if (!patient || !consentForm.title.trim() || !consentForm.content.trim()) {
       setMessage("Select a patient and add consent form title plus content.");
       return;
     }
 
-    createConsentForm({
+    await createConsentForm({
       patientId: patient.id,
       patientName: patient.name,
       patientEmail: patient.email,
@@ -679,7 +679,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       isSigned: false,
       createdDate: new Date().toISOString(),
     });
-    setConsentFormsState(getConsentForms());
+    refreshConsentForms();
     setConsentForm(createDefaultConsentForm());
     setMessage(`Consent form created for ${patient.name}.`);
   };
@@ -691,14 +691,14 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       return;
     }
 
-    createMedicalReport({
+    await createMedicalReport({
       patientId: patient.id,
       reportType: reportForm.reportType.trim(),
       title: reportForm.title.trim(),
       date: new Date().toISOString().split("T")[0],
       description: reportForm.description.trim(),
     });
-    setMedicalReportsState(getMedicalReports());
+    refreshMedicalReports();
 
     if (patient.email) {
       const result = await sendReportEmail({
@@ -737,8 +737,8 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       notes: billingForm.notes.trim(),
     };
 
-    createInsuranceBilling(payload);
-    setInsuranceBillingsState(getInsuranceBillings());
+    await createInsuranceBilling(payload);
+    refreshInsuranceBillings();
 
     if (patient.email) {
       const result = await sendBillingEmail({ ...payload, patientName: patient.name, patientEmail: patient.email, patientPhone: patient.phone });
@@ -750,8 +750,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     setBillingForm(createDefaultBillingForm());
   };
 
-  const applyTemplate = () => {
-    const patient = allCarePatients.find((item) => item.id === reminderForm.patientId || item.id === consentForm.patientId);
+  const applyTemplate = async () => {
     if (!selectedTemplate) {
       setMessage("Select a care template to apply.");
       return;
@@ -765,11 +764,11 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     }
 
     const createdDate = new Date().toISOString();
-    template.followUpItems.forEach((item) => {
-      createFollowUp({ patientId: targetPatient.id, ...item, status: "pending", createdDate });
-    });
-    template.consentForms.forEach((form) => {
-      createConsentForm({
+    for (const item of template.followUpItems) {
+      await createFollowUp({ patientId: targetPatient.id, ...item, status: "pending", createdDate });
+    }
+    for (const form of template.consentForms) {
+      await createConsentForm({
         patientId: targetPatient.id,
         patientName: targetPatient.name,
         patientEmail: targetPatient.email,
@@ -777,19 +776,19 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
         isSigned: false,
         createdDate,
       });
-    });
+    }
 
-    setFollowUpsState(getFollowUps());
-    setConsentFormsState(getConsentForms());
+    refreshFollowUps();
+    refreshConsentForms();
     setMessage(`Template "${template.name}" applied to ${targetPatient.name}.`);
     setSelectedTemplate("");
   };
 
-  const markPatientPaid = (patient: AdminPatient) => {
+  const markPatientPaid = async (patient: AdminPatient) => {
     const updated = patients.map((item) =>
       item.id === patient.id ? { ...item, amountPaid: item.totalFees || item.amountPaid || "0", paymentStatus: "paid" as const } : item,
     );
-    savePatientList(updated);
+    await savePatientList(updated);
     setMessage(`${patient.name} marked as paid.`);
   };
 
@@ -802,7 +801,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     setMessage(sent ? "WhatsApp payment reminder opened." : "No WhatsApp number found for this patient.");
   };
 
-  const createStaffMember = () => {
+  const createStaffMember = async () => {
     if (!staffForm.name.trim()) {
       setMessage("Add staff name before saving.");
       return;
@@ -818,7 +817,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       permissions: staffForm.permissions,
       createdAt: new Date().toISOString(),
     };
-    saveStaffList([staff, ...staffMembers]);
+    await saveStaffList([staff, ...staffMembers]);
     setStaffForm(createDefaultStaffForm());
     setMessage("Staff member saved.");
   };
@@ -837,30 +836,42 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
     }));
   };
 
-  const saveSettings = () => {
-    const credentials = getAdminCredentials();
-    const hasCredentialChanges =
-      credentialForm.password || credentialForm.confirmPassword || credentialForm.username.trim() !== credentials.username;
+  const saveSettings = async () => {
+    const hasCredentialChanges = credentialForm.password || credentialForm.username.trim() !== adminUsername;
 
     if (hasCredentialChanges) {
       if (!credentialForm.username.trim()) {
         setMessage("Admin username cannot be empty.");
         return;
       }
-      if (credentialForm.password !== credentialForm.confirmPassword) {
+      if (credentialForm.password && credentialForm.password !== credentialForm.confirmPassword) {
         setMessage("Admin password confirmation does not match.");
         return;
       }
     }
 
-    setClinicSettings(settingsForm);
+    try {
+      await setClinicSettings(settingsForm);
+      queryClient.invalidateQueries({ queryKey: ["clinicSettings"] });
 
-    if (hasCredentialChanges) {
-      setAdminCredentials({ username: credentialForm.username.trim(), password: credentialForm.password || credentials.password });
-      setCredentialForm((prev) => ({ ...prev, password: "", confirmPassword: "" }));
+      if (hasCredentialChanges) {
+        const result = await changeAdminCredentials(credentialForm.username.trim(), credentialForm.password || undefined);
+        if (!result.success) {
+          setMessage(result.message || "Settings saved, but the admin login change failed.");
+          return;
+        }
+        queryClient.invalidateQueries({ queryKey: ["adminUsername"] });
+        setCredentialForm((prev) => ({ ...prev, password: "", confirmPassword: "" }));
+      }
+
+      setMessage("Settings saved.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to save settings.");
     }
+  };
 
-    setMessage("Settings saved.");
+  const toggleStaffActive = async (member: StaffMember) => {
+    await saveStaffList(staffMembers.map((item) => (item.id === member.id ? { ...item, active: !item.active } : item)));
   };
 
   const renderAppointmentList = (items: AdminAppointment[]) => {
@@ -897,7 +908,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
                     key={status}
                     size="sm"
                     variant={appointment.status === status ? "default" : "secondary"}
-                    onClick={() => updateAppointmentStatus(appointment.id, status)}
+                    onClick={() => updateAppointmentStatusHandler(appointment.id, status)}
                     className="h-9 capitalize"
                   >
                     {status}
@@ -966,7 +977,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
                   <Label htmlFor="appointment-notes">Notes</Label>
                   <Input id="appointment-notes" value={appointmentForm.notes} onChange={(event) => setAppointmentForm({ ...appointmentForm, notes: event.target.value })} />
                 </div>
-                <Button onClick={createAppointment} className="gap-2">
+                <Button onClick={createAppointmentHandler} className="gap-2">
                   <CalendarCheck className="h-4 w-4" />
                   Save appointment
                 </Button>
@@ -1621,7 +1632,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
                           </div>
                           <p className="mt-2 text-sm text-muted-foreground">Permissions: {member.permissions.join(", ") || "-"}</p>
                         </div>
-                        <Button size="sm" variant="secondary" onClick={() => saveStaffList(staffMembers.map((item) => (item.id === member.id ? { ...item, active: !item.active } : item)))}>
+                        <Button size="sm" variant="secondary" onClick={() => toggleStaffActive(member)}>
                           {member.active ? "Deactivate" : "Activate"}
                         </Button>
                       </div>
@@ -1769,7 +1780,7 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
                 </div>
                 <div>
                   <Label htmlFor="admin-password">New password</Label>
-                  <Input id="admin-password" type="password" value={credentialForm.password} onChange={(event) => setCredentialForm({ ...credentialForm, password: event.target.value })} />
+                  <Input id="admin-password" type="password" value={credentialForm.password} onChange={(event) => setCredentialForm({ ...credentialForm, password: event.target.value })} placeholder="Leave blank to keep current password" />
                 </div>
                 <div>
                   <Label htmlFor="admin-confirm">Confirm password</Label>

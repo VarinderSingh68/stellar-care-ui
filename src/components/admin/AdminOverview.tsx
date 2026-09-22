@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   Bell,
@@ -59,12 +59,30 @@ const StatCard = ({
 );
 
 const AdminOverview = ({ clinicName, onNavigate }: AdminOverviewProps) => {
-  const patients = useMemo<AdminPatient[]>(() => getPatients(), []);
-  const followUps = useMemo(() => getFollowUps(), []);
+  const queryClient = useQueryClient();
+  const { data: patients = [] } = useQuery<AdminPatient[]>({
+    queryKey: ["patients"],
+    queryFn: getPatients,
+  });
+  const { data: followUps = [] } = useQuery({
+    queryKey: ["followUps"],
+    queryFn: getFollowUps,
+  });
   const { data: appointments = [] } = useQuery({
     queryKey: ["appointments"],
     queryFn: getBookings,
   });
+
+  useEffect(() => {
+    const refreshPatients = () => queryClient.invalidateQueries({ queryKey: ["patients"] });
+    const refreshFollowUps = () => queryClient.invalidateQueries({ queryKey: ["followUps"] });
+    window.addEventListener("patientsUpdated", refreshPatients);
+    window.addEventListener("followUpUpdated", refreshFollowUps);
+    return () => {
+      window.removeEventListener("patientsUpdated", refreshPatients);
+      window.removeEventListener("followUpUpdated", refreshFollowUps);
+    };
+  }, [queryClient]);
 
   const today = getTodayInputValue();
 

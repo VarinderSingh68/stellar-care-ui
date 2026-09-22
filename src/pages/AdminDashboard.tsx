@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import AdminShell from "@/components/admin/AdminShell";
 import AdminOverview from "@/components/admin/AdminOverview";
 import AdminPatientsSection from "@/components/admin/AdminPatientsSection";
@@ -22,8 +23,8 @@ const operationsPanelSections: AdminSectionId[] = [
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [activeSection, setActiveSection] = useState<AdminSectionId>("overview");
-  const [clinicName, setClinicName] = useState(() => getClinicSettings().clinicName);
 
   useEffect(() => {
     if (!isAdminLoggedIn()) {
@@ -31,11 +32,18 @@ const AdminDashboard = () => {
     }
   }, [navigate]);
 
+  const { data: settings } = useQuery({
+    queryKey: ["clinicSettings"],
+    queryFn: getClinicSettings,
+    enabled: isAdminLoggedIn(),
+  });
+  const clinicName = settings?.clinicName || "Dr. Rana Dental Clinic";
+
   useEffect(() => {
-    const refreshSettings = () => setClinicName(getClinicSettings().clinicName);
+    const refreshSettings = () => queryClient.invalidateQueries({ queryKey: ["clinicSettings"] });
     window.addEventListener("clinicSettingsUpdated", refreshSettings);
     return () => window.removeEventListener("clinicSettingsUpdated", refreshSettings);
-  }, []);
+  }, [queryClient]);
 
   const handleLogout = () => {
     logoutAdmin();

@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
-import { getPatientByEmail, createPatientRecord, type PatientRecord } from "@/lib/patient-portal";
+import { loginPatient, registerPatient } from "@/lib/patient-portal";
 
 const PatientPortalLoginPage = () => {
   const navigate = useNavigate();
@@ -56,9 +56,8 @@ const PatientPortalLoginPage = () => {
 
     setIsLoading(true);
     try {
-      const patient = getPatientByEmail(loginData.email);
-      if (patient && patient.password === loginData.password) {
-        localStorage.setItem("cardiovita.patient-auth", JSON.stringify(patient));
+      const result = await loginPatient(loginData.email.trim(), loginData.password);
+      if (result.success) {
         toast({
           title: "Success",
           description: "Welcome to your patient portal!",
@@ -67,7 +66,7 @@ const PatientPortalLoginPage = () => {
       } else {
         toast({
           title: "Error",
-          description: "Invalid email or password",
+          description: result.message || "Invalid email or password",
           variant: "destructive",
         });
       }
@@ -109,37 +108,31 @@ const PatientPortalLoginPage = () => {
       return;
     }
 
-    if (getPatientByEmail(registerData.email)) {
-      toast({
-        title: "Error",
-        description: "Email already registered",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setIsLoading(true);
     try {
-      const newPatient: PatientRecord = {
-        id: "",
-        patientName: registerData.name,
-        patientEmail: registerData.email.toLowerCase(),
-        patientPhone: registerData.phone,
+      const result = await registerPatient({
+        name: registerData.name,
+        email: registerData.email,
+        phone: registerData.phone,
         password: registerData.password,
         age: registerData.age,
         gender: registerData.gender,
         address: registerData.address,
-      };
-
-      const created = createPatientRecord(newPatient);
-      localStorage.setItem("cardiovita.patient-auth", JSON.stringify(created));
-
-      toast({
-        title: "Success",
-        description: "Account created successfully!",
       });
 
-      navigate("/patient-portal/dashboard");
+      if (result.success) {
+        toast({
+          title: "Success",
+          description: "Account created successfully!",
+        });
+        navigate("/patient-portal/dashboard");
+      } else {
+        toast({
+          title: "Error",
+          description: result.message || "Could not create account. The email may already be registered.",
+          variant: "destructive",
+        });
+      }
     } finally {
       setIsLoading(false);
     }

@@ -14,6 +14,15 @@ dist-ssr
 runtime-prescriptions
 *.local
 
+# Backend JSON data store + uploaded media (server/store.cjs) -- this is
+# runtime data, not source. On Render, point DATA_DIR at a persistent Disk
+# instead of relying on this being committed. NOTE: the root-level
+# bookings.json is intentionally NOT ignored -- it's the legacy seed file
+# that email-server.cjs migrates into data/bookings.json on first boot.
+/data/
+/data_test/
+/uploads/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

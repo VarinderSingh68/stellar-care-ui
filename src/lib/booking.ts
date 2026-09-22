@@ -11,20 +11,10 @@ export interface Booking {
   bookingDate: string;
 }
 
-export const getBookings = async (): Promise<Booking[]> => {
-  try {
-    const response = await fetch(`${API_CONFIG.baseUrl}/api/bookings`);
-    if (!response.ok) {
-      console.error("Failed to fetch bookings:", response.statusText);
-      return [];
-    }
-    const bookings = await response.json();
-    return bookings;
-  } catch (error) {
-    console.error("Error fetching bookings:", error);
-    return [];
-  }
-};
+// NOTE: reading the list of bookings back requires an admin session (see
+// GET /api/bookings in email-server.cjs, which now protects patient PII
+// behind admin auth) -- use `getBookings` from "@/lib/admin" for that.
+// This module only covers the public, unauthenticated booking flow.
 
 export const saveBookingAndNotify = async (booking: Omit<Booking, 'id' | 'bookingDate'>): Promise<{ success: boolean; message: string }> => {
   const baseUrl = API_CONFIG.baseUrl?.trim();

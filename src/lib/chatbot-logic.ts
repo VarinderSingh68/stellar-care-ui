@@ -8,7 +8,7 @@ export interface KnowledgeBase {
 export const knowledgeBase: KnowledgeBase = {
   greetings: {
     keywords: ["hello", "hi", "hey"],
-    response: "Hello! I'm the StellarCare Assistant. How can I help you today? You can ask me about our services, prices, contact information, or how to book an appointment.",
+    response: "Hello! I'm the Dr. Rana Dental Clinic Assistant. How can I help you today? You can ask me about our services, prices, contact information, or how to book an appointment.",
   },
   about: {
     keywords: ["about", "clinic", "who are you", "location", "where"],

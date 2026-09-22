@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Search, Send, UserPlus } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink, MessageCircle, Search, Send, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -62,29 +63,34 @@ const buildManualPrescriptionWhatsAppUrl = (patient: AdminPatient) => {
 
 const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 
+interface SendResult {
+  patientId: string;
+  pdfUrl?: string;
+  whatsappUrl?: string;
+}
+
 const AdminPatientsSection = () => {
-  const [patients, setPatientsState] = useState<AdminPatient[]>([]);
+  const queryClient = useQueryClient();
+  const { data: patients = [] } = useQuery<AdminPatient[]>({
+    queryKey: ["patients"],
+    queryFn: getPatients,
+  });
   const [newPatient, setNewPatient] = useState(createDefaultPatientState);
   const [message, setMessage] = useState("");
   const [patientSearch, setPatientSearch] = useState("");
+  const [sendingPatientId, setSendingPatientId] = useState<string | null>(null);
+  const [lastSendResult, setLastSendResult] = useState<SendResult | null>(null);
 
-  useEffect(() => {
-    setPatientsState(getPatients());
-    const refreshPatients = () => setPatientsState(getPatients());
-    window.addEventListener("patientsUpdated", refreshPatients);
-    return () => window.removeEventListener("patientsUpdated", refreshPatients);
-  }, []);
+  const savePatientsMutation = useMutation({
+    mutationFn: (updated: AdminPatient[]) => setPatients(updated),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["patients"] }),
+  });
 
-  const savePatients = (updated: AdminPatient[]) => {
-    setPatients(updated);
-    setPatientsState(updated);
-  };
-
-  const markPrescriptionSent = (patientId: string, patientList: AdminPatient[] = patients) => {
+  const markPrescriptionSent = async (patientId: string, patientList: AdminPatient[] = patients) => {
     const sentAt = new Date().toISOString();
     const updated = patientList.map((patient) => (patient.id === patientId ? { ...patient, prescriptionSentAt: sentAt } : patient));
-    savePatients(updated);
-    return sentAt;
+    await savePatientsMutation.mutateAsync(updated);
+    return updated;
   };
 
   const createPatient = async () => {
@@ -123,7 +129,12 @@ const AdminPatientsSection = () => {
     };
 
     const updated = [patient, ...patients];
-    savePatients(updated);
+    try {
+      await savePatientsMutation.mutateAsync(updated);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to save patient record.");
+      return;
+    }
     setNewPatient(createDefaultPatientState());
 
     if (patient.email) {
@@ -146,7 +157,7 @@ const AdminPatientsSection = () => {
       });
 
       if (notificationResult.success) {
-        markPrescriptionSent(patient.id, updated);
+        await markPrescriptionSent(patient.id, updated);
         setMessage(`Patient saved. ${notificationResult.message}`);
       } else {
         setMessage(`${notificationResult.message} You can retry from "Send prescription".`);
@@ -168,8 +179,9 @@ const AdminPatientsSection = () => {
       return;
     }
 
-    const whatsappWindow = patient.phone ? window.open("", "_blank") : null;
-    const pdfWindow = window.open("", "_blank");
+    setSendingPatientId(patient.id);
+    setLastSendResult(null);
+    setMessage(`Sending prescription to ${patient.name}...`);
 
     const notificationResult = await sendPrescriptionEmail({
       patientName: patient.name,
@@ -189,37 +201,28 @@ const AdminPatientsSection = () => {
       notes: patient.notes,
     });
 
+    setSendingPatientId(null);
+
     if (notificationResult.success) {
-      markPrescriptionSent(patient.id);
-      const pdfUrl = notificationResult.prescriptionPdf?.localUrl;
+      await markPrescriptionSent(patient.id);
+      const pdfUrl = notificationResult.prescriptionPdf?.publicUrl || notificationResult.prescriptionPdf?.localUrl;
       const whatsappUrl = buildManualPrescriptionWhatsAppUrl(patient);
 
-      if (pdfUrl && pdfWindow) {
-        pdfWindow.location.href = pdfUrl;
-      } else if (pdfWindow) {
-        pdfWindow.close();
-      }
-
-      if (whatsappUrl && whatsappWindow) {
-        whatsappWindow.location.href = whatsappUrl;
-      } else if (whatsappWindow) {
-        whatsappWindow.close();
-      }
-
-      const manualShareMessage = whatsappUrl
-        ? `WhatsApp opened for ${patient.phone}. Attach the PDF tab there.`
-        : "PDF opened in a new tab for manual sharing.";
+      // Browsers block window.open() calls that aren't a direct result of a
+      // click, so instead of guessing and opening blank tabs up front (which
+      // most browsers silently blocked), show explicit buttons below that
+      // the admin clicks themselves -- that click is a real user gesture, so
+      // it always opens.
+      setLastSendResult({ patientId: patient.id, pdfUrl, whatsappUrl: whatsappUrl || undefined });
 
       setMessage(
         patient.prescriptionSentAt
-          ? `Prescription email resent. ${manualShareMessage}`
-          : `Prescription email sent. ${manualShareMessage}`,
+          ? "Prescription email resent. Use the links below to open the PDF or WhatsApp."
+          : "Prescription email sent. Use the links below to open the PDF or WhatsApp.",
       );
       return;
     }
 
-    if (pdfWindow) pdfWindow.close();
-    if (whatsappWindow) whatsappWindow.close();
     setMessage(`${notificationResult.message} Please check the notification server and try again.`);
   };
 
@@ -333,7 +336,7 @@ const AdminPatientsSection = () => {
                 <Input id="patient-notes" value={newPatient.notes} onChange={(event) => setNewPatient({ ...newPatient, notes: event.target.value })} placeholder="Allergies, payment note, priority..." />
               </div>
             </div>
-            <Button onClick={createPatient} className="gap-2">
+            <Button onClick={createPatient} className="gap-2" disabled={savePatientsMutation.isPending}>
               <UserPlus className="h-4 w-4" />
               Save patient record
             </Button>
@@ -397,11 +400,37 @@ const AdminPatientsSection = () => {
                         <p className="text-sm text-muted-foreground">
                           Prescription notification: {patient.prescriptionSentAt ? `Sent on ${new Date(patient.prescriptionSentAt).toLocaleString()}` : "Not sent yet"}
                         </p>
+                        {lastSendResult?.patientId === patient.id && (lastSendResult.pdfUrl || lastSendResult.whatsappUrl) && (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {lastSendResult.pdfUrl && (
+                              <a href={lastSendResult.pdfUrl} target="_blank" rel="noreferrer">
+                                <Button variant="outline" size="sm" className="gap-2">
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                  Open PDF
+                                </Button>
+                              </a>
+                            )}
+                            {lastSendResult.whatsappUrl && (
+                              <a href={lastSendResult.whatsappUrl} target="_blank" rel="noreferrer">
+                                <Button variant="outline" size="sm" className="gap-2">
+                                  <MessageCircle className="h-3.5 w-3.5" />
+                                  Open WhatsApp
+                                </Button>
+                              </a>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-2 sm:mt-0">
-                        <Button variant="secondary" size="sm" className="gap-2" onClick={() => sendPrescription(patient)}>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => sendPrescription(patient)}
+                          disabled={sendingPatientId === patient.id}
+                        >
                           <Send className="h-3.5 w-3.5" />
-                          {patient.prescriptionSentAt ? "Resend" : "Send"}
+                          {sendingPatientId === patient.id ? "Sending..." : patient.prescriptionSentAt ? "Resend" : "Send"}
                         </Button>
                       </div>
                     </div>

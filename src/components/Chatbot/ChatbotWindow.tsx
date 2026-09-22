@@ -45,7 +45,7 @@ const ChatbotWindow = ({ messages, onSendMessage }: ChatbotWindowProps) => {
   return (
     <Card className="w-80 h-[28rem] mb-4 flex flex-col shadow-lg">
       <CardHeader>
-        <CardTitle>StellarCare Assistant</CardTitle>
+        <CardTitle>Dr. Rana Dental Clinic Assistant</CardTitle>
       </CardHeader>
       <CardContent className="flex-grow overflow-hidden">
         <ScrollArea className="h-full" ref={scrollAreaRef}>

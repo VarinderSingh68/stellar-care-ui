@@ -1,18 +1,217 @@
+// Dr. Rana Dental Clinic -- unified backend API.
+//
+// This is the single backend entry point for the whole app (kept as
+// `email-server.cjs` so render.yaml / Procfile / package.json scripts do
+// not need to change). It replaces the previous three overlapping servers
+// (server.ts, email-server.cjs, simple-email-server.cjs) with one Express
+// app that provides:
+//   - Server-side, file-backed storage for every collection the admin
+//     console and patient portal use (patients, appointments, treatment
+//     plans, clinical notes, staff, settings, follow-ups, consent forms,
+//     medical reports, insurance billing, media, portal patient accounts)
+//     instead of browser localStorage, so data is shared across devices
+//     and visible to every visitor, not just the admin's own browser.
+//   - Admin and patient-portal authentication (hashed passwords, signed
+//     session tokens) instead of the old plaintext/no-auth checks.
+//   - Email (Gmail SMTP via Nodemailer) and optional WhatsApp (WATI)
+//     notifications, with correct "Dr. Rana Dental Clinic" branding.
+//   - Hand-rolled PDF generation for prescriptions, follow-ups, reports
+//     and billing summaries.
+//
+// See server/store.cjs for a note on data persistence on hosts with an
+// ephemeral filesystem (e.g. Render web services without a Disk).
+
 const express = require('express');
-const nodemailer = require('nodemailer');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 dotenv.config();
 
+const { JsonStore } = require('./server/store.cjs');
+const { getOrCreateSessionSecret, hashPassword, verifyPassword, createTokenFactory, getBearerToken } = require('./server/auth.cjs');
+const { createMailer } = require('./server/mailer.cjs');
+const { createWatiClient } = require('./server/wati.cjs');
+const { COLLECTIONS } = require('./server/collections.cjs');
+const pdf = require('./server/pdf.cjs');
+
+// ---------------------------------------------------------------------------
+// Data directory + migration of the legacy root-level bookings.json
+// ---------------------------------------------------------------------------
+
+const DATA_DIR = path.resolve(__dirname, process.env.DATA_DIR || 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads', 'media');
+const PRESCRIPTIONS_DIR = path.join(DATA_DIR, 'runtime-prescriptions');
+[UPLOADS_DIR, PRESCRIPTIONS_DIR].forEach((dir) => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+const legacyBookingsPath = path.resolve(__dirname, 'bookings.json');
+const newBookingsPath = path.join(DATA_DIR, 'bookings.json');
+if (!fs.existsSync(newBookingsPath) && fs.existsSync(legacyBookingsPath)) {
+  try {
+    fs.copyFileSync(legacyBookingsPath, newBookingsPath);
+    console.log('ℹ️  Migrated existing bookings.json into', newBookingsPath);
+  } catch (error) {
+    console.error('⚠️  Could not migrate legacy bookings.json:', error.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stores
+// ---------------------------------------------------------------------------
+
+const bookingsStore = new JsonStore(newBookingsPath, []);
+
+const DEFAULT_CLINIC_SETTINGS = {
+  clinicName: 'Dr. Rana Dental Clinic',
+  doctorName: 'Dr. Rana',
+  phone: process.env.CLINIC_PHONE || '090414 81946',
+  whatsappNumber: '',
+  email: '',
+  address: 'New Mata Gujri Enclave, Gurudwara Sahib Road, Janta Nagar, Mundi Kharar, Kharar, Punjab 140301',
+  openingTime: '10:00',
+  closingTime: '19:00',
+  workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+  prescriptionFooter: 'Please follow the prescription as advised and contact the clinic for any urgent concern.',
+  reminderLeadHours: '24',
+};
+
+const settingsStore = new JsonStore(path.join(DATA_DIR, 'settings.json'), DEFAULT_CLINIC_SETTINGS);
+const adminCredentialsStore = new JsonStore(path.join(DATA_DIR, 'admin-credentials.json'), null);
+
+const stores = {};
+Object.entries(COLLECTIONS).forEach(([name, config]) => {
+  stores[name] = new JsonStore(path.join(DATA_DIR, config.file), config.default);
+});
+
+// ---------------------------------------------------------------------------
+// Bootstrap: default admin account + demo patient portal account
+// ---------------------------------------------------------------------------
+
+const ADMIN_DEFAULT_USERNAME = 'admin';
+const ADMIN_DEFAULT_PASSWORD = 'password123';
+
+async function bootstrapAdminCredentials() {
+  const existing = await adminCredentialsStore.read();
+  if (existing && existing.username && existing.passwordHash) return;
+  await adminCredentialsStore.write({
+    username: ADMIN_DEFAULT_USERNAME,
+    passwordHash: hashPassword(ADMIN_DEFAULT_PASSWORD),
+  });
+  console.log(`ℹ️  Created default admin account (${ADMIN_DEFAULT_USERNAME} / ${ADMIN_DEFAULT_PASSWORD}).`);
+  console.log('   Change this immediately from Admin Dashboard -> Settings once you log in.');
+}
+
+async function bootstrapDemoPatient() {
+  const patients = await stores['portal-patients'].read();
+  if (patients.some((p) => p.patientEmail === 'patient@demo.com')) return;
+  const demoPatient = {
+    id: `patient-demo-${crypto.randomBytes(4).toString('hex')}`,
+    patientName: 'Demo Patient',
+    patientEmail: 'patient@demo.com',
+    patientPhone: '9999999999',
+    password: hashPassword('demo123'),
+    age: '30',
+    gender: 'other',
+    address: '',
+  };
+  await stores['portal-patients'].write([...patients, demoPatient]);
+  console.log('ℹ️  Seeded demo patient portal account (patient@demo.com / demo123).');
+}
+
+const bootstrapPromise = Promise.all([bootstrapAdminCredentials(), bootstrapDemoPatient()]).catch((error) => {
+  console.error('❌ Bootstrap error:', error.message);
+});
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+const SESSION_SECRET = getOrCreateSessionSecret(DATA_DIR);
+const { signToken, verifyToken } = createTokenFactory(SESSION_SECRET);
+
+const ADMIN_TOKEN_TTL_SECONDS = 12 * 60 * 60; // 12 hours
+const PATIENT_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
+function authenticateRequest(req) {
+  const token = getBearerToken(req);
+  if (!token) return null;
+  const payload = verifyToken(token);
+  if (!payload || !payload.role) return null;
+  return payload; // { role: 'admin' } or { role: 'patient', sub: patientId }
+}
+
+function requireAdmin(req, res, next) {
+  const auth = authenticateRequest(req);
+  if (!auth || auth.role !== 'admin') {
+    return res.status(401).json({ success: false, message: 'Admin authentication required.' });
+  }
+  req.auth = auth;
+  next();
+}
+
+function requirePatient(req, res, next) {
+  const auth = authenticateRequest(req);
+  if (!auth || auth.role !== 'patient') {
+    return res.status(401).json({ success: false, message: 'Patient authentication required.' });
+  }
+  req.auth = auth;
+  next();
+}
+
+// ---------------------------------------------------------------------------
+// Mailer / WATI
+// ---------------------------------------------------------------------------
+
+const mailer = createMailer();
+const wati = createWatiClient();
+const ADMIN_NOTIFICATION_EMAIL = (process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() || null;
+
+async function sendMailSafe(options) {
+  if (!mailer.configured) {
+    return { sent: false, error: 'Email is not configured on the server (EMAIL_USER / EMAIL_PASSWORD missing).' };
+  }
+  try {
+    await mailer.transporter.sendMail({ from: mailer.fromAddress, ...options });
+    return { sent: true };
+  } catch (error) {
+    console.error('❌ Email send error:', error?.message || error);
+    return { sent: false, error: error?.message || String(error) };
+  }
+}
+
+async function getClinicInfo() {
+  const settings = await settingsStore.read();
+  const merged = { ...DEFAULT_CLINIC_SETTINGS, ...settings };
+  return {
+    clinicName: merged.clinicName,
+    doctorName: merged.doctorName,
+    clinicAddress: merged.address,
+    clinicPhone: merged.phone,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Express app
+// ---------------------------------------------------------------------------
+
 const app = express();
-app.use(express.json({ limit: '50mb' })); // Increased limit for potential large PDF data
-app.use(cors()); // Enable CORS for all routes
+app.use(express.json({ limit: '20mb' }));
+app.use(cors());
+app.use('/uploads', express.static(path.join(DATA_DIR, 'uploads')));
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'email-server' });
+  res.json({
+    status: 'ok',
+    service: 'dr-rana-dental-clinic-api',
+    emailConfigured: mailer.configured,
+    watiConfigured: wati.configured,
+  });
 });
 
 app.get('/', (req, res) => {
@@ -23,644 +222,378 @@ app.get('/', (req, res) => {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Email Server Status</title>
+        <title>Dr. Rana Dental Clinic - API Status</title>
         <style>
-          body {
-            margin: 0;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #000;
-            color: #fff;
-            font-family: Inter, system-ui, sans-serif;
-          }
-          .card {
-            width: min(720px, calc(100% - 32px));
-            padding: 32px;
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 24px;
-            background: rgba(15, 23, 42, 0.96);
-            box-shadow: 0 35px 60px rgba(0, 0, 0, 0.35);
-          }
-          .title {
-            margin: 0 0 16px;
-            font-size: 1.75rem;
-            letter-spacing: -0.03em;
-          }
-          .status {
-            display: inline-flex;
-            gap: 0.75rem;
-            align-items: center;
-            margin-bottom: 24px;
-          }
-          .dot {
-            width: 14px;
-            height: 14px;
-            border-radius: 9999px;
-            background: #f59e0b;
-            box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
-          }
-          .info {
-            font-size: 0.95rem;
-            color: #cbd5e1;
-            line-height: 1.8;
-          }
+          body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #000; color: #fff; font-family: Inter, system-ui, sans-serif; }
+          .card { width: min(720px, calc(100% - 32px)); padding: 32px; border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; background: rgba(15, 23, 42, 0.96); box-shadow: 0 35px 60px rgba(0, 0, 0, 0.35); }
+          .title { margin: 0 0 16px; font-size: 1.75rem; letter-spacing: -0.03em; }
+          .status { display: inline-flex; gap: 0.75rem; align-items: center; margin-bottom: 24px; }
+          .dot { width: 14px; height: 14px; border-radius: 9999px; background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,0.18); }
+          .info { font-size: 0.95rem; color: #cbd5e1; line-height: 1.8; }
           .info strong { color: #fff; }
-          .pre {
-            margin: 24px 0 0;
-            padding: 18px;
-            border-radius: 16px;
-            background: rgba(255,255,255,0.04);
-            color: #e2e8f0;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-            overflow-x: auto;
-          }
+          .pre { margin: 24px 0 0; padding: 18px; border-radius: 16px; background: rgba(255,255,255,0.04); color: #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; overflow-x: auto; }
         </style>
       </head>
       <body>
         <div class="card">
-          <h1 class="title">Email Server Status</h1>
-          <div class="status">
-            <span class="dot" id="status-dot"></span>
-            <span id="status-label">Checking email server...</span>
-          </div>
-          <div class="info" id="status-message">Connecting to backend health endpoint.</div>
-          <pre class="pre" id="status-details"></pre>
+          <h1 class="title">Dr. Rana Dental Clinic -- API</h1>
+          <div class="status"><span class="dot"></span><span>API online</span></div>
+          <div class="info">This is the backend API for the clinic website and admin console.</div>
+          <pre class="pre" id="details">Loading status...</pre>
         </div>
         <script>
-          const statusDot = document.getElementById('status-dot');
-          const statusLabel = document.getElementById('status-label');
-          const statusMessage = document.getElementById('status-message');
-          const statusDetails = document.getElementById('status-details');
-
-          fetch('/health', { cache: 'no-store' })
-            .then(async (response) => {
-              const json = await response.json().catch(() => ({}));
-              if (!response.ok) {
-                throw new Error('HTTP ' + response.status);
-              }
-              statusDot.style.background = '#22c55e';
-              statusDot.style.boxShadow = '0 0 0 4px rgba(34,197,94,0.18)';
-              statusLabel.textContent = 'Email server online';
-              statusMessage.textContent = 'The email server is running and ready to accept API calls.';
-              statusDetails.textContent = JSON.stringify(json, null, 2);
-            })
-            .catch((error) => {
-              statusDot.style.background = '#f97316';
-              statusDot.style.boxShadow = '0 0 0 4px rgba(249,115,22,0.18)';
-              statusLabel.textContent = 'Email server offline';
-              statusMessage.textContent = 'Unable to reach the backend health endpoint.';
-              statusDetails.textContent = error?.message || 'Unknown error';
-            });
+          fetch('/health').then((r) => r.json()).then((j) => {
+            document.getElementById('details').textContent = JSON.stringify(j, null, 2);
+          }).catch(() => {});
         </script>
       </body>
     </html>
   `);
 });
 
-const BOOKINGS_FILE = 'bookings.json';
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
 
-// Create bookings.json if it doesn't exist
-if (!fs.existsSync(BOOKINGS_FILE)) {
-  fs.writeFileSync(BOOKINGS_FILE, '[]', 'utf8');
-}
+app.get('/api/settings', async (req, res) => {
+  const settings = await settingsStore.read();
+  res.json({ ...DEFAULT_CLINIC_SETTINGS, ...settings });
+});
 
-// Email configuration
-const emailUser = process.env.EMAIL_USER;
-const emailPassword = (process.env.EMAIL_PASSWORD || '').replace(/\s/g, '');
-
-if (!emailUser || !emailPassword) {
-  console.error("FATAL ERROR: EMAIL_USER or EMAIL_PASSWORD is not defined in the environment.");
-  console.error("Please create a .env file in the root of the project and add these variables.");
-  process.exit(1); // Exit with an error code
-}
-
-console.log('Setting up email with:', emailUser);
-
-function sanitizeText(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim();
-}
-
-function formatDateText(value) {
-  if (!value) return '';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? sanitizeText(value) : date.toLocaleDateString();
-}
-
-function wrapText(value, maxLength) {
-  const words = String(value || '').split(/\s+/).filter(Boolean);
-  const lines = [];
-  let current = '';
-  words.forEach((word) => {
-    const next = current ? `${current} ${word}` : word;
-    if (next.length > maxLength) {
-      if (current) lines.push(current);
-      current = word;
-    } else {
-      current = next;
-    }
-  });
-  if (current) lines.push(current);
-  return lines;
-}
-
-function buildBasicPdfBuffer(lines) {
-  const contentLines = [
-    'BT',
-    '/F1 12 Tf',
-    '1 0 0 1 40 800 Tm',
-  ];
-  lines.forEach((line, index) => {
-    const y = 800 - index * 18;
-    contentLines.push(`(${escapePdfText(line)}) Tj`, 'T*');
-  });
-  contentLines.push('ET');
-  const contentStream = contentLines.join('\n');
-  const objects = [
-    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
-    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
-    `5 0 obj\n<< /Length ${Buffer.byteLength(contentStream, 'utf8')} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
-  ];
-  return buildPdfFromObjects(objects);
-}
-
-function buildPdfFromObjects(objects) {
-  let pdf = '%PDF-1.4\n';
-  const offsets = [0];
-
-  objects.forEach((obj) => {
-    offsets.push(Buffer.byteLength(pdf, 'utf8'));
-    pdf += obj;
-  });
-
-  const xrefOffset = Buffer.byteLength(pdf, 'utf8');
-  pdf += `xref\n0 ${objects.length + 1}\n`;
-  pdf += '0000000000 65535 f \n';
-  for (let i = 1; i <= objects.length; i += 1) {
-    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+app.put('/api/settings', requireAdmin, async (req, res) => {
+  if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+    return res.status(400).json({ success: false, message: 'Expected a settings object.' });
   }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-
-  return Buffer.from(pdf, 'utf8');
-}
-
-// Professional PDF generation functions
-function escapePdfText(value) {
-  return sanitizeText(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-}
-
-function pdfText(text, x, y, font = 'F1', size = 12, color = [0, 0, 0]) {
-  return `${color.join(' ')} rg\nBT /${font} ${size} Tf 1 0 0 1 ${x} ${y} Tm (${escapePdfText(text)}) Tj ET`;
-}
-
-function pdfLine(x1, y1, x2, y2, width = 1) {
-  return `${width} w ${x1} ${y1} m ${x2} ${y2} l S`;
-}
-
-function pdfRect(x, y, width, height, fillRgb = null, strokeRgb = null, lineWidth = 1) {
-  const commands = [];
-  if (fillRgb) commands.push(`${fillRgb.join(' ')} rg`);
-  if (strokeRgb) commands.push(`${strokeRgb.join(' ')} RG`);
-  commands.push(`${lineWidth} w`);
-  commands.push(`${x} ${y} ${width} ${height} re`);
-  if (fillRgb && strokeRgb) commands.push('B');
-  else if (fillRgb) commands.push('f');
-  else commands.push('S');
-  return commands.join('\n');
-}
-
-function formatMoneyText(value) {
-  if (!value) return '';
-  const amount = Number(value);
-  return Number.isNaN(amount) ? sanitizeText(value) : `INR ${amount.toLocaleString('en-IN')}`;
-}
-
-function generatePrescriptionPdfBuffer({
-  patientName,
-  patientEmail,
-  patientPhone,
-  gender,
-  age,
-  suffering,
-  prescription,
-  prescriptionDate,
-  visitDate,
-  totalFees,
-  amountPaid,
-  paymentStatus,
-}) {
-  const dateText = prescriptionDate ? new Date(prescriptionDate).toLocaleString() : new Date().toLocaleString();
-  const visitDateText = formatDateText(visitDate) || dateText;
-  const genderAgeText = [sanitizeText(gender), sanitizeText(age)].filter(Boolean).join(' / ') || '-';
-  const feesText = formatMoneyText(totalFees) || '-';
-  const paidText = formatMoneyText(amountPaid) || '-';
-  const statusText = sanitizeText(paymentStatus) || '-';
-  const diagnosisLines = wrapText(sanitizeText(suffering) || '-', 74).slice(0, 2);
-  const prescriptionLines = String(prescription || '')
-    .split(/\r?\n/)
-    .flatMap((line) => wrapText(sanitizeText(line), 70))
-    .slice(0, 14);
-
-  const contentLines = [
-    // Header with blue background
-    pdfRect(0, 770, 595, 72, [0.12, 0.35, 0.74]),
-    // Border
-    pdfRect(24, 24, 547, 794, null, [0.86, 0.9, 0.95], 1.2),
-    // Patient details box
-    pdfRect(36, 670, 523, 84, [0.95, 0.97, 1], [0.82, 0.87, 0.95], 1),
-    // Diagnosis box
-    pdfRect(36, 612, 523, 62, [0.98, 0.99, 1], [0.86, 0.9, 0.95], 1),
-    // Prescription area
-    pdfRect(36, 110, 523, 485, null, [0.82, 0.87, 0.95], 1),
-    
-    // Clinic header
-    pdfText('CardioVita Medical Center', 42, 810, 'F2', 22, [1, 1, 1]),
-    pdfText('Medical Prescription', 42, 790, 'F1', 11, [0.92, 0.97, 1]),
-    
-    // Doctor info
-    pdfText(`Doctor: Dr. Rana`, 410, 810, 'F2', 14, [1, 1, 1]),
-    pdfText(`Phone: 6283968189`, 410, 790, 'F1', 11, [0.92, 0.97, 1]),
-    pdfText('New Mata Gujri Enclave, Janta Nagar, Kharar', 42, 774, 'F1', 9, [0.92, 0.97, 1]),
-    pdfText('Punjab 140301', 42, 761, 'F1', 9, [0.92, 0.97, 1]),
-    
-    // Patient Details section
-    pdfText('Patient Details', 48, 730, 'F2', 14, [0.16, 0.22, 0.35]),
-    pdfText(`Name: ${sanitizeText(patientName)}`, 48, 708, 'F1', 11, [0.1, 0.1, 0.1]),
-    pdfText(`Phone: ${sanitizeText(patientPhone) || '-'}`, 300, 708, 'F1', 11, [0.1, 0.1, 0.1]),
-    pdfText(`Email: ${sanitizeText(patientEmail) || '-'}`, 48, 690, 'F1', 10, [0.2, 0.2, 0.2]),
-    pdfText(`Visit: ${sanitizeText(visitDateText)}`, 300, 690, 'F1', 10, [0.2, 0.2, 0.2]),
-    pdfText(`Gender/Age: ${genderAgeText}`, 48, 674, 'F1', 10, [0.2, 0.2, 0.2]),
-    pdfText(`Fees: ${feesText} | Paid: ${paidText}`, 300, 674, 'F1', 10, [0.2, 0.2, 0.2]),
-    pdfText(`Payment: ${statusText}`, 48, 660, 'F1', 9, [0.28, 0.28, 0.28]),
-    pdfText(`Generated: ${sanitizeText(dateText)}`, 300, 660, 'F1', 9, [0.28, 0.28, 0.28]),
-    
-    // Diagnosis section
-    pdfText('Diagnosis', 48, 650, 'F2', 13, [0.16, 0.22, 0.35]),
-    pdfText(diagnosisLines[0] || '-', 48, 632, 'F1', 11, [0.1, 0.1, 0.1]),
-    pdfText(diagnosisLines[1] || '', 48, 616, 'F1', 11, [0.1, 0.1, 0.1]),
-    
-    // Rx symbol (large, blue)
-    pdfText('Rx', 48, 576, 'F2', 24, [0.12, 0.35, 0.74]),
-    
-    // Prescription lines
-    pdfLine(42, 598, 553, 598, 1),
-    pdfLine(84, 568, 535, 568, 0.7),
-    pdfLine(84, 540, 535, 540, 0.7),
-    pdfLine(84, 512, 535, 512, 0.7),
-    pdfLine(84, 484, 535, 484, 0.7),
-    pdfLine(84, 456, 535, 456, 0.7),
-    pdfLine(84, 428, 535, 428, 0.7),
-    pdfLine(84, 400, 535, 400, 0.7),
-    pdfLine(84, 372, 535, 372, 0.7),
-    pdfLine(84, 344, 535, 344, 0.7),
-    pdfLine(84, 316, 535, 316, 0.7),
-    pdfLine(84, 288, 535, 288, 0.7),
-    pdfLine(84, 260, 535, 260, 0.7),
-    pdfLine(84, 232, 535, 232, 0.7),
-    pdfLine(84, 204, 535, 204, 0.7),
-    
-    // Signature area
-    pdfText('Signature', 430, 128, 'F1', 10, [0.35, 0.35, 0.35]),
-    pdfLine(392, 142, 540, 142, 1),
-    pdfText('Dr. Rana', 442, 116, 'F2', 12, [0.16, 0.22, 0.35]),
-    
-    // Footer
-    pdfText('CardioVita Medical Center', 42, 72, 'F2', 12, [0.16, 0.22, 0.35]),
-    pdfText('Address: New Mata Gujri Enclave, Janta Nagar, Kharar, Punjab 140301', 42, 56, 'F1', 9, [0.25, 0.25, 0.25]),
-    pdfText('Phone: 6283968189', 42, 40, 'F1', 9, [0.25, 0.25, 0.25]),
-  ];
-
-  // Add prescription lines
-  prescriptionLines.forEach((line, index) => {
-    const y = 548 - (index * 28);
-    contentLines.push(pdfText(line, 94, y, 'F1', 12, [0.08, 0.08, 0.08]));
-  });
-
-  const contentStream = contentLines.join('\n');
-
-  const objects = [
-    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>\nendobj\n',
-    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
-    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n',
-    `6 0 obj\n<< /Length ${Buffer.byteLength(contentStream, 'utf8')} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
-  ];
-
-  return buildPdfFromObjects(objects);
-}
-
-function generateFollowUpPdfBuffer({ patientName, patientEmail, patientPhone, title, description, dueDate, type, clinicName, doctorName, clinicAddress, clinicPhone }) {
-  const dateText = new Date().toLocaleString();
-  const dueDateText = formatDateText(dueDate);
-  const descriptionLines = wrapText(sanitizeText(description) || 'No additional details provided.', 70);
-
-  const contentLines = [
-    // Header with blue background
-    pdfRect(0, 770, 595, 72, [0.12, 0.35, 0.74]),
-    // Border
-    pdfRect(24, 24, 547, 794, null, [0.86, 0.9, 0.95], 1.2),
-    // Patient details box
-    pdfRect(36, 670, 523, 84, [0.95, 0.97, 1], [0.82, 0.87, 0.95], 1),
-    // Task details box
-    pdfRect(36, 580, 523, 72, [0.98, 0.99, 1], [0.86, 0.9, 0.95], 1),
-    // Instructions area
-    pdfRect(36, 110, 523, 455, null, [0.82, 0.87, 0.95], 1),
-
-    // Clinic header
-    pdfText(clinicName, 42, 810, 'F2', 22, [1, 1, 1]),
-    pdfText('Follow-up Reminder', 42, 790, 'F1', 11, [0.92, 0.97, 1]),
-
-    // Doctor info
-    pdfText(`Doctor: Dr. Rana`, 410, 810, 'F2', 14, [1, 1, 1]),
-    pdfText(`Phone: 6283968189`, 410, 790, 'F1', 11, [0.92, 0.97, 1]),
-    pdfText('New Mata Gujri Enclave, Janta Nagar, Kharar', 42, 774, 'F1', 9, [0.92, 0.97, 1]),
-    pdfText('Punjab 140301', 42, 761, 'F1', 9, [0.92, 0.97, 1]),
-    
-    // Patient Details section
-    pdfText('Patient Details', 48, 730, 'F2', 14, [0.16, 0.22, 0.35]),
-    pdfText(`Name: ${sanitizeText(patientName)}`, 48, 708, 'F1', 11, [0.1, 0.1, 0.1]),
-    pdfText(`Phone: ${sanitizeText(patientPhone) || '-'}`, 300, 708, 'F1', 11, [0.1, 0.1, 0.1]),
-    pdfText(`Email: ${sanitizeText(patientEmail) || '-'}`, 48, 690, 'F1', 10, [0.2, 0.2, 0.2]),
-    pdfText(`Generated: ${sanitizeText(dateText)}`, 300, 690, 'F1', 10, [0.2, 0.2, 0.2]),
-    
-    // Task Details section
-    pdfText('Task Details', 48, 640, 'F2', 14, [0.16, 0.22, 0.35]),
-    pdfText(`Task: ${sanitizeText(title)}`, 48, 620, 'F1', 11, [0.1, 0.1, 0.1]),
-    pdfText(`Type: ${sanitizeText(type)}`, 48, 604, 'F1', 10, [0.2, 0.2, 0.2]),
-    pdfText(`Due Date: ${dueDateText}`, 300, 604, 'F1', 10, [0.2, 0.2, 0.2]),
-    
-    // Instructions header (large, blue)
-    pdfText('Instructions', 48, 560, 'F2', 18, [0.12, 0.35, 0.74]),
-
-    // Instructions lines
-    pdfLine(42, 548, 553, 548, 1),
-    pdfLine(84, 520, 535, 520, 0.7),
-    pdfLine(84, 492, 535, 492, 0.7),
-    pdfLine(84, 464, 535, 464, 0.7),
-    pdfLine(84, 436, 535, 436, 0.7),
-    pdfLine(84, 408, 535, 408, 0.7),
-    pdfLine(84, 380, 535, 380, 0.7),
-    pdfLine(84, 352, 535, 352, 0.7),
-    pdfLine(84, 324, 535, 324, 0.7),
-    pdfLine(84, 296, 535, 296, 0.7),
-    pdfLine(84, 268, 535, 268, 0.7),
-    pdfLine(84, 240, 535, 240, 0.7),
-    pdfLine(84, 212, 535, 212, 0.7),
-    pdfLine(84, 184, 535, 184, 0.7),
-    pdfLine(84, 156, 535, 156, 0.7),
-
-    // Footer
-    pdfText('CardioVita Medical Center', 42, 72, 'F2', 12, [0.16, 0.22, 0.35]),
-    pdfText('Address: New Mata Gujri Enclave, Janta Nagar, Kharar, Punjab 140301', 42, 56, 'F1', 9, [0.25, 0.25, 0.25]),
-    pdfText('Phone: 6283968189', 42, 40, 'F1', 9, [0.25, 0.25, 0.25]),
-  ];
-
-  // Add description lines
-  descriptionLines.forEach((line, index) => {
-    const y = 520 - (index * 28);
-    contentLines.push(pdfText(`• ${line}`, 94, y, 'F1', 12, [0.08, 0.08, 0.08]));
-  });
-
-  const contentStream = contentLines.join('\n');
-
-  const objects = [
-    '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-    '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>\nendobj\n',
-    '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
-    '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n',
-    `6 0 obj\n<< /Length ${Buffer.byteLength(contentStream, 'utf8')} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
-  ];
-
-  return buildPdfFromObjects(objects);
-}
-
-function generateReportPdfBuffer({ patientName, patientEmail, patientPhone, reportType, title, description, date, clinicName, doctorName, clinicAddress, clinicPhone }) {
-  const lines = [
-    'Medical Report',
-    '---------------',
-    `Patient: ${sanitizeText(patientName)}`,
-    `Email: ${sanitizeText(patientEmail)}`,
-    `Phone: ${sanitizeText(patientPhone) || 'N/A'}`,
-    `Report Type: ${sanitizeText(reportType)}`,
-    `Title: ${sanitizeText(title)}`,
-    `Date: ${formatDateText(date)}`,
-    '',
-    'Summary:',
-    ...wrapText(sanitizeText(description) || 'No description provided.', 70),
-  ];
-  return buildBasicPdfBuffer(lines);
-}
-
-function generateBillingPdfBuffer({ patientName, patientEmail, patientPhone, claimId, insuranceProvider, policyNumber, treatmentDate, amount, status, notes, submissionDate, clinicName, doctorName, clinicAddress, clinicPhone }) {
-  const lines = [
-    'Insurance Billing Summary',
-    '-------------------------',
-    `Patient: ${sanitizeText(patientName)}`,
-    `Email: ${sanitizeText(patientEmail)}`,
-    `Phone: ${sanitizeText(patientPhone) || 'N/A'}`,
-    `Claim ID: ${sanitizeText(claimId)}`,
-    `Insurance: ${sanitizeText(insuranceProvider)}`,
-    `Policy #: ${sanitizeText(policyNumber) || 'N/A'}`,
-    `Treatment Date: ${formatDateText(treatmentDate)}`,
-    `Amount: ₹${sanitizeText(String(amount))}`,
-    `Status: ${sanitizeText(status)}`,
-    `Submission Date: ${formatDateText(submissionDate)}`,
-    '',
-    'Notes:',
-    ...wrapText(sanitizeText(notes) || 'No notes provided.', 70),
-  ];
-  return buildBasicPdfBuffer(lines);
-}
-
-const cleanedEmailPassword = (emailPassword || '').replace(/\s+/g, '');
-const cleanedEmailUser = (emailUser || '').trim();
-
-// Create Nodemailer transporter using Gmail SMTP explicitly
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true,
-  auth: {
-    user: cleanedEmailUser,
-    pass: cleanedEmailPassword,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-  connectionTimeout: 20000,
-  greetingTimeout: 20000,
-  socketTimeout: 20000,
-  debug: false,
+  const next = { ...DEFAULT_CLINIC_SETTINGS, ...req.body };
+  await settingsStore.write(next);
+  res.json({ success: true, settings: next });
 });
 
-// Test email connection
-transporter.verify((error, success) => {
-  if (error) {
-    console.error('❌ Email server error:', error.message);
-    console.error('   EMAIL_USER set:', !!cleanedEmailUser, 'EMAIL_PASSWORD set:', !!cleanedEmailPassword);
-    if (!cleanedEmailPassword) {
-      console.error('   Hint: EMAIL_PASSWORD appears empty after trimming spaces. Use a valid Gmail app password.');
-    }
-  } else {
-    console.log('✅ Email server ready to send');
+// ---------------------------------------------------------------------------
+// Admin auth
+// ---------------------------------------------------------------------------
+
+app.post('/api/admin/login', async (req, res) => {
+  await bootstrapPromise;
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  if (!username || !password) {
+    return res.status(400).json({ success: false, message: 'Username and password are required.' });
   }
+
+  const credentials = await adminCredentialsStore.read();
+  if (!credentials || username !== credentials.username || !verifyPassword(password, credentials.passwordHash)) {
+    return res.status(401).json({ success: false, message: 'Invalid username or password.' });
+  }
+
+  const token = signToken({ role: 'admin', sub: 'admin' }, ADMIN_TOKEN_TTL_SECONDS);
+  res.json({ success: true, token, username: credentials.username });
 });
 
-// --- Removed custom SMTP client functions (waitForResponse, smtpCommand, sendMail) ---
-// The Nodemailer 'transporter' will be used directly for sending emails.
-// ---
-
-// Get all bookings
-app.get('/api/bookings', (req, res) => {
-  fs.readFile(BOOKINGS_FILE, 'utf8', (err, data) => {
-    if (err) {
-      console.error('❌ Error reading bookings file:', err.message);
-      return res.status(500).json({ success: false, message: 'Failed to read bookings.' });
-    }
-    res.json(JSON.parse(data));
-  });
+app.get('/api/admin/me', requireAdmin, async (req, res) => {
+  const credentials = await adminCredentialsStore.read();
+  res.json({ success: true, username: credentials?.username || ADMIN_DEFAULT_USERNAME });
 });
 
-// Create an appointment from the admin panel (stored alongside public bookings)
-app.post('/api/appointments', async (req, res) => {
-  try {
-    const { patientName, appointmentDate, appointmentTime, reason } = req.body;
-    if (!patientName || !appointmentDate || !appointmentTime || !reason) {
-      return res.status(400).json({ success: false, message: 'Missing required appointment fields.' });
-    }
+app.post('/api/admin/change-credentials', requireAdmin, async (req, res) => {
+  const nextUsername = String(req.body?.username || '').trim();
+  const nextPassword = String(req.body?.password || '');
+  if (!nextUsername) {
+    return res.status(400).json({ success: false, message: 'Username cannot be empty.' });
+  }
 
-    const appointment = {
-      id: req.body.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      patientId: req.body.patientId,
-      patientName,
-      patientEmail: req.body.patientEmail,
-      patientPhone: req.body.patientPhone,
-      appointmentDate,
-      appointmentTime,
-      durationMinutes: req.body.durationMinutes || 30,
-      reason,
-      status: req.body.status || 'scheduled',
-      notes: req.body.notes,
-      bookingDate: req.body.bookingDate || new Date().toISOString(),
+  const current = await adminCredentialsStore.read();
+  const updated = {
+    username: nextUsername,
+    passwordHash: nextPassword ? hashPassword(nextPassword) : current.passwordHash,
+  };
+  await adminCredentialsStore.write(updated);
+  res.json({ success: true, username: updated.username });
+});
+
+// ---------------------------------------------------------------------------
+// Patient portal auth
+// ---------------------------------------------------------------------------
+
+function isValidEmail(value) {
+  return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function publicPatient(record) {
+  if (!record) return record;
+  const { password, ...rest } = record;
+  return rest;
+}
+
+app.post('/api/patient/register', async (req, res) => {
+  const name = String(req.body?.patientName || req.body?.name || '').trim();
+  const email = String(req.body?.patientEmail || req.body?.email || '').trim().toLowerCase();
+  const phone = String(req.body?.patientPhone || req.body?.phone || '').trim();
+  const password = String(req.body?.password || '');
+  const age = req.body?.age !== undefined ? String(req.body.age).trim() : undefined;
+  const gender = req.body?.gender ? String(req.body.gender).trim() : undefined;
+  const address = req.body?.address ? String(req.body.address).trim() : undefined;
+
+  if (!name || !email || !phone || !password) {
+    return res.status(400).json({ success: false, message: 'Name, email, phone and password are required.' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+  }
+
+  const result = await stores['portal-patients'].update((records) => {
+    if (records.some((p) => p.patientEmail === email)) {
+      throw Object.assign(new Error('Email already registered'), { code: 'DUPLICATE' });
+    }
+    const record = {
+      id: `patient-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      patientName: name,
+      patientEmail: email,
+      patientPhone: phone,
+      password: hashPassword(password),
+      age,
+      gender,
+      address,
     };
-
-    const data = await fs.promises.readFile(BOOKINGS_FILE, 'utf8').catch((err) => (err.code === 'ENOENT' ? '[]' : Promise.reject(err)));
-    const bookings = JSON.parse(data);
-    bookings.push(appointment);
-    await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8');
-
-    console.log('✅ Appointment saved:', appointment.patientName, appointment.appointmentDate, appointment.appointmentTime);
-    res.json({ success: true, message: 'Appointment saved.', appointment });
-  } catch (error) {
-    console.error('❌ Appointment create error:', error?.message || error);
-    res.status(500).json({ success: false, message: 'Failed to save appointment.' });
-  }
-});
-
-// Update an appointment (status, notes, etc.) by id
-app.put('/api/appointments/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const data = await fs.promises.readFile(BOOKINGS_FILE, 'utf8').catch((err) => (err.code === 'ENOENT' ? '[]' : Promise.reject(err)));
-    const bookings = JSON.parse(data);
-    const index = bookings.findIndex((booking) => booking.id === id);
-
-    if (index === -1) {
-      return res.status(404).json({ success: false, message: 'Appointment not found.' });
-    }
-
-    bookings[index] = { ...bookings[index], ...req.body };
-    await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8');
-
-    console.log('✅ Appointment updated:', id, req.body.status ? `status -> ${req.body.status}` : '');
-    res.json({ success: true, message: 'Appointment updated.', appointment: bookings[index] });
-  } catch (error) {
-    console.error('❌ Appointment update error:', error?.message || error);
-    res.status(500).json({ success: false, message: 'Failed to update appointment.' });
-  }
-});
-
-async function sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason }) {
-  try {
-    console.log('📧 Sending booking emails for:', patientName, 'to:', patientEmail);
-
-    const patientMailOptions = {
-      from: cleanedEmailUser,
-      to: patientEmail,
-      replyTo: cleanedEmailUser,
-      subject: 'CardioVita - Appointment Confirmation',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">Appointment Confirmation</h2>
-          <p>Dear ${patientName},</p>
-          <p>Thank you for booking an appointment with CardioVita. Your appointment details are:</p>
-          <div style="background-color: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2563eb;">
-            <p><strong>📅 Date:</strong> ${appointmentDate}</p>
-            <p><strong>⏰ Time:</strong> ${appointmentTime}</p>
-            <p><strong>📋 Reason:</strong> ${reason}</p>
-          </div>
-          <p>We will contact you at <strong>${patientPhone}</strong> to confirm your appointment.</p>
-          <p style="margin-top: 30px; color: #666; font-size: 12px;">
-            If you have any questions, please reply to this email.
-          </p>
-          <p style="margin-top: 20px;">Best regards,<br><strong>CardioVita Medical Team</strong></p>
-        </div>
-      `,
-    };
-
-    const adminMailOptions = {
-      from: cleanedEmailUser,
-      to: 'ngw.designer@gmail.com',
-      replyTo: cleanedEmailUser,
-      subject: `New Appointment Booking - ${patientName}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">New Appointment Booking</h2>
-          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
-            <p><strong>Patient Name:</strong> ${patientName}</p>
-            <p><strong>Email:</strong> <a href="mailto:${patientEmail}">${patientEmail}</a></p>
-            <p><strong>Phone:</strong> <a href="tel:${patientPhone}">${patientPhone}</a></p>
-            <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
-            <p><strong>Appointment Date:</strong> ${appointmentDate}</p>
-            <p><strong>Appointment Time:</strong> ${appointmentTime}</p>
-            <p><strong>Reason for Visit:</strong> ${reason}</p>
-          </div>
-          <p style="margin-top: 20px; color: #666; font-size: 12px;">
-            Please contact the patient to confirm this appointment.
-          </p>
-        </div>
-      `,
-    };
-
-    const patientResult = await transporter.sendMail(patientMailOptions);
-    const adminResult = await transporter.sendMail(adminMailOptions);
-
-    console.log('✅ Emails sent successfully');
-    console.log('   Patient email:', patientResult.response);
-    console.log('   Admin email:', adminResult.response);
-    return { patientResult, adminResult };
-  } catch (error) {
-    console.error('❌ Booking email error:', error?.message || error);
+    return [...records, record];
+  }).catch((error) => {
+    if (error.code === 'DUPLICATE') return null;
     throw error;
-  }
-}
+  });
 
-// Send booking confirmation email
+  if (!result) {
+    return res.status(409).json({ success: false, message: 'This email is already registered.' });
+  }
+
+  const created = result[result.length - 1];
+  const token = signToken({ role: 'patient', sub: created.id }, PATIENT_TOKEN_TTL_SECONDS);
+  res.json({ success: true, token, patient: publicPatient(created) });
+});
+
+app.post('/api/patient/login', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: 'Email and password are required.' });
+  }
+
+  const records = await stores['portal-patients'].read();
+  const patient = records.find((p) => p.patientEmail === email);
+  if (!patient || !verifyPassword(password, patient.password)) {
+    return res.status(401).json({ success: false, message: 'Invalid email or password.' });
+  }
+
+  const token = signToken({ role: 'patient', sub: patient.id }, PATIENT_TOKEN_TTL_SECONDS);
+  res.json({ success: true, token, patient: publicPatient(patient) });
+});
+
+app.get('/api/patient/me', requirePatient, async (req, res) => {
+  const records = await stores['portal-patients'].read();
+  const patient = records.find((p) => p.id === req.auth.sub);
+  if (!patient) return res.status(404).json({ success: false, message: 'Patient not found.' });
+  res.json({ success: true, patient: publicPatient(patient) });
+});
+
+app.patch('/api/patient/follow-ups/:id', requirePatient, async (req, res) => {
+  const allowedFields = ['status', 'completedDate'];
+  const updates = {};
+  allowedFields.forEach((field) => {
+    if (req.body && req.body[field] !== undefined) updates[field] = req.body[field];
+  });
+
+  const updated = await stores['follow-ups'].update((items) => {
+    const index = items.findIndex((item) => item.id === req.params.id);
+    if (index === -1 || items[index].patientId !== req.auth.sub) return items;
+    const next = [...items];
+    next[index] = { ...next[index], ...updates };
+    return next;
+  });
+
+  const item = updated.find((entry) => entry.id === req.params.id);
+  if (!item || item.patientId !== req.auth.sub) {
+    return res.status(404).json({ success: false, message: 'Follow-up not found.' });
+  }
+  res.json({ success: true, followUp: item });
+});
+
+app.post('/api/patient/consent-forms/:id/sign', requirePatient, async (req, res) => {
+  const updated = await stores['consent-forms'].update((items) => {
+    const index = items.findIndex((item) => item.id === req.params.id);
+    if (index === -1 || items[index].patientId !== req.auth.sub) return items;
+    const next = [...items];
+    next[index] = { ...next[index], isSigned: true, signatureDate: new Date().toISOString() };
+    return next;
+  });
+
+  const item = updated.find((entry) => entry.id === req.params.id);
+  if (!item || item.patientId !== req.auth.sub) {
+    return res.status(404).json({ success: false, message: 'Consent form not found.' });
+  }
+  res.json({ success: true, consentForm: item });
+});
+
+// ---------------------------------------------------------------------------
+// Generic collection data API (admin full access; a handful of patient-care
+// collections are also readable -- filtered to the caller's own records --
+// with a patient token). See server/collections.cjs for the access rules.
+// ---------------------------------------------------------------------------
+
+app.get('/api/data/:name', async (req, res) => {
+  const config = COLLECTIONS[req.params.name];
+  if (!config || req.params.name === 'media') {
+    return res.status(404).json({ success: false, message: 'Unknown collection.' });
+  }
+
+  const auth = authenticateRequest(req);
+  if (!auth) return res.status(401).json({ success: false, message: 'Authentication required.' });
+
+  if (auth.role === 'admin') {
+    let data = await stores[req.params.name].read();
+    if (config.stripFields) {
+      data = data.map((item) => {
+        const copy = { ...item };
+        config.stripFields.forEach((field) => delete copy[field]);
+        return copy;
+      });
+    }
+    return res.json(data);
+  }
+
+  if (auth.role === 'patient' && !config.adminOnly && config.patientFilterField) {
+    const data = await stores[req.params.name].read();
+    const filtered = data.filter((item) => item[config.patientFilterField] === auth.sub);
+    return res.json(filtered);
+  }
+
+  return res.status(403).json({ success: false, message: 'You do not have access to this collection.' });
+});
+
+app.put('/api/data/:name', requireAdmin, async (req, res) => {
+  const config = COLLECTIONS[req.params.name];
+  if (!config) return res.status(404).json({ success: false, message: 'Unknown collection.' });
+  if (!Array.isArray(req.body)) return res.status(400).json({ success: false, message: 'Expected an array.' });
+
+  await stores[req.params.name].write(req.body);
+  res.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// Media (public read so every visitor sees published testimonials media;
+// admin-only publish/upload/delete via the generic PUT above + upload route)
+// ---------------------------------------------------------------------------
+
+app.get('/api/media', async (req, res) => {
+  const media = await stores.media.read();
+  res.json(media);
+});
+
+const ALLOWED_MEDIA_TYPES = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+};
+const MAX_MEDIA_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+app.post('/api/admin/media-upload', requireAdmin, async (req, res) => {
+  const { contentType, dataBase64 } = req.body || {};
+  const extension = ALLOWED_MEDIA_TYPES[contentType];
+  if (!extension) {
+    return res.status(400).json({ success: false, message: 'Unsupported file type. Use JPEG, PNG, WebP, GIF, MP4, WebM or MOV.' });
+  }
+  if (!dataBase64 || typeof dataBase64 !== 'string') {
+    return res.status(400).json({ success: false, message: 'Missing file data.' });
+  }
+
+  let buffer;
+  try {
+    buffer = Buffer.from(dataBase64, 'base64');
+  } catch {
+    return res.status(400).json({ success: false, message: 'Invalid file data.' });
+  }
+
+  if (buffer.length === 0 || buffer.length > MAX_MEDIA_UPLOAD_BYTES) {
+    return res.status(400).json({ success: false, message: `File must be between 1 byte and ${MAX_MEDIA_UPLOAD_BYTES / (1024 * 1024)}MB. For larger videos, paste a hosted URL instead.` });
+  }
+
+  const filename = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${extension}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
+
+  res.json({ success: true, url: `/uploads/media/${filename}` });
+});
+
+// ---------------------------------------------------------------------------
+// Bookings / appointments
+// ---------------------------------------------------------------------------
+
+app.get('/api/bookings', requireAdmin, async (req, res) => {
+  const bookings = await bookingsStore.read();
+  res.json(bookings);
+});
+
+app.post('/api/appointments', requireAdmin, async (req, res) => {
+  const { patientName, appointmentDate, appointmentTime, reason } = req.body || {};
+  if (!patientName || !appointmentDate || !appointmentTime || !reason) {
+    return res.status(400).json({ success: false, message: 'Missing required appointment fields.' });
+  }
+
+  const appointment = {
+    id: req.body.id || `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+    patientId: req.body.patientId,
+    patientName,
+    patientEmail: req.body.patientEmail,
+    patientPhone: req.body.patientPhone,
+    appointmentDate,
+    appointmentTime,
+    durationMinutes: req.body.durationMinutes || 30,
+    reason,
+    status: req.body.status || 'scheduled',
+    notes: req.body.notes,
+    bookingDate: req.body.bookingDate || new Date().toISOString(),
+  };
+
+  const bookings = await bookingsStore.update((list) => [...list, appointment]);
+  res.json({ success: true, message: 'Appointment saved.', appointment, count: bookings.length });
+});
+
+app.put('/api/appointments/:id', requireAdmin, async (req, res) => {
+  let found = null;
+  const updated = await bookingsStore.update((list) => {
+    const index = list.findIndex((item) => item.id === req.params.id);
+    if (index === -1) return list;
+    const next = [...list];
+    next[index] = { ...next[index], ...req.body };
+    found = next[index];
+    return next;
+  });
+
+  if (!found) return res.status(404).json({ success: false, message: 'Appointment not found.' });
+  res.json({ success: true, message: 'Appointment updated.', appointment: found });
+});
+
+// ---------------------------------------------------------------------------
+// Public booking + notification endpoints
+// ---------------------------------------------------------------------------
+
 app.post('/api/send-booking', async (req, res) => {
   try {
-    const { patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason } = req.body;
-
+    const { patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason } = req.body || {};
     if (!patientName || !patientEmail || !patientPhone || !appointmentDate || !appointmentTime || !reason) {
       return res.status(400).json({ success: false, message: 'Missing booking fields.' });
     }
+    if (!isValidEmail(patientEmail)) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
+    }
 
+    const clinicInfo = await getClinicInfo();
     const newBooking = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
       patientName,
       patientEmail,
       patientPhone,
@@ -668,377 +601,303 @@ app.post('/api/send-booking', async (req, res) => {
       appointmentTime,
       reason,
       status: 'scheduled',
+      bookingDate: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
+    await bookingsStore.update((list) => [...list, newBooking]);
 
-    try {
-      const data = await fs.promises.readFile(BOOKINGS_FILE, 'utf8');
-      const bookings = JSON.parse(data);
-      bookings.push(newBooking);
-      await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify(bookings, null, 2), 'utf8');
-      console.log('✅ Booking saved to file.');
-    } catch (fileError) {
-      if (fileError.code === 'ENOENT') {
-        await fs.promises.writeFile(BOOKINGS_FILE, JSON.stringify([newBooking], null, 2), 'utf8');
-        console.log('✅ Booking file created and saved.');
-      } else {
-        console.error('❌ Booking file save error:', fileError.message);
+    const patientHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2563eb;">Appointment Confirmation</h2>
+        <p>Dear ${patientName},</p>
+        <p>Thank you for booking an appointment with ${clinicInfo.clinicName}. Your appointment details are:</p>
+        <div style="background-color: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2563eb;">
+          <p><strong>Date:</strong> ${appointmentDate}</p>
+          <p><strong>Time:</strong> ${appointmentTime}</p>
+          <p><strong>Reason:</strong> ${reason}</p>
+        </div>
+        <p>We will contact you at <strong>${patientPhone}</strong> to confirm your appointment.</p>
+        <p style="margin-top: 20px;">Best regards,<br><strong>${clinicInfo.clinicName}</strong><br>${clinicInfo.clinicAddress}<br>Phone: ${clinicInfo.clinicPhone}</p>
+      </div>`;
+
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2563eb;">New Appointment Booking</h2>
+        <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
+          <p><strong>Patient Name:</strong> ${patientName}</p>
+          <p><strong>Email:</strong> ${patientEmail}</p>
+          <p><strong>Phone:</strong> ${patientPhone}</p>
+          <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
+          <p><strong>Appointment Date:</strong> ${appointmentDate}</p>
+          <p><strong>Appointment Time:</strong> ${appointmentTime}</p>
+          <p><strong>Reason for Visit:</strong> ${reason}</p>
+        </div>
+      </div>`;
+
+    const emailResults = { sent: false };
+    setImmediate(async () => {
+      const patientResult = await sendMailSafe({ to: patientEmail, subject: `${clinicInfo.clinicName} - Appointment Confirmation`, html: patientHtml });
+      if (ADMIN_NOTIFICATION_EMAIL) {
+        await sendMailSafe({ to: ADMIN_NOTIFICATION_EMAIL, subject: `New Appointment Booking - ${patientName}`, html: adminHtml });
       }
-    }
-
-    setImmediate(() => {
-      sendBookingEmails({ patientName, patientEmail, patientPhone, appointmentDate, appointmentTime, reason })
-        .catch((emailError) => {
-          console.error('❌ Background email send failed:', emailError?.message || emailError);
-        });
+      if (!patientResult.sent) {
+        console.error('❌ Booking confirmation email failed:', patientResult.error);
+      }
     });
 
-    res.json({ success: true, message: 'Booking received. Email notifications are being processed.' });
+    const whatsapp = await wati.sendBookingWhatsApp({
+      patientName,
+      patientPhone,
+      appointmentDate,
+      appointmentTime,
+      clinicPhone: clinicInfo.clinicPhone,
+    });
+
+    res.json({
+      success: true,
+      message: mailer.configured
+        ? 'Booking received. Confirmation email is being sent.'
+        : 'Booking received and saved. Email notifications are disabled on the server right now.',
+      notifications: { whatsapp },
+    });
   } catch (error) {
     console.error('❌ Booking endpoint error:', error?.message || error);
     res.status(500).json({ success: false, message: 'Failed to process booking.' });
   }
 });
 
-// Send prescription email
-app.post('/api/send-prescription', async (req, res) => {
+app.post('/api/send-prescription', requireAdmin, async (req, res) => {
   try {
     const {
-      patientName,
-      patientEmail,
-      patientPhone,
-      gender,
-      age,
-      address,
-      suffering,
-      prescription,
-      prescriptionDate,
-      visitDate,
-      totalFees,
-      amountPaid,
-      paymentStatus,
-      nextAppointmentDate,
-      notes,
-    } = req.body;
+      patientName, patientEmail, patientPhone, gender, age, address,
+      suffering, prescription, prescriptionDate, visitDate,
+      totalFees, amountPaid, paymentStatus, nextAppointmentDate, notes,
+    } = req.body || {};
 
     const trimmedEmail = String(patientEmail || '').trim();
-
-    // Validate required fields
     if (!patientName || !suffering || !prescription) {
       return res.status(400).json({ success: false, message: 'Missing required prescription fields.' });
     }
-
-    // Validate email
-    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
       return res.status(400).json({ success: false, message: 'Valid patient email is required to send the prescription.' });
     }
 
-    console.log('📧 Sending prescription email for:', patientName);
-
-    // Generate PDF buffer
-    const pdfBuffer = generatePrescriptionPdfBuffer({
-      patientName,
-      patientEmail: trimmedEmail,
-      patientPhone,
-      gender,
-      age,
-      suffering,
-      prescription,
-      prescriptionDate,
-      visitDate,
-      totalFees,
-      amountPaid,
-      paymentStatus,
+    const clinicInfo = await getClinicInfo();
+    const pdfBuffer = pdf.generatePrescriptionPdfBuffer({
+      clinicInfo, patientName, patientEmail: trimmedEmail, patientPhone, gender, age,
+      suffering, prescription, prescriptionDate, visitDate, totalFees, amountPaid, paymentStatus,
     });
-    
-    // Nodemailer expects content as a Buffer, not base64 string
-    const attachmentContent = pdfBuffer;
 
-    // Store the PDF locally and get public/local URLs
-    const prescriptionFilename = `prescription-${sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`;
+    const filename = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-prescription.pdf`;
+    fs.writeFileSync(path.join(PRESCRIPTIONS_DIR, filename), pdfBuffer);
+    const publicAppUrl = (process.env.PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
+    const pathname = `/api/prescriptions/${encodeURIComponent(filename)}`;
+    const localUrl = `${req.protocol}://${req.get('host')}${pathname}`;
+    const publicUrl = publicAppUrl ? `${publicAppUrl}${pathname}` : localUrl;
 
-    // Build patient email HTML
     const patientDetailRows = [
-      ['Visit Date', formatDateText(visitDate || prescriptionDate)],
-      ['Gender', gender],
-      ['Age', age],
-      ['Phone', patientPhone],
-      ['Address', address],
-      ['Total Fees', totalFees ? `₹${totalFees}` : ''],
-      ['Amount Paid', amountPaid ? `₹${amountPaid}` : ''],
-      ['Payment Status', paymentStatus],
-      ['Next Appointment', formatDateText(nextAppointmentDate)],
-      ['Notes', notes],
-    ].filter(([, value]) => sanitizeText(value));
-
-    const detailListHtml = patientDetailRows
-      .map(([label, value]) => `<p><strong>${label}:</strong> ${sanitizeText(value)}</p>`)
-      .join('');
+      ['Visit Date', pdf.formatDateText(visitDate || prescriptionDate)],
+      ['Gender', gender], ['Age', age], ['Phone', patientPhone], ['Address', address],
+      ['Total Fees', pdf.formatMoneyText(totalFees)], ['Amount Paid', pdf.formatMoneyText(amountPaid)],
+      ['Payment Status', paymentStatus], ['Next Appointment', pdf.formatDateText(nextAppointmentDate)], ['Notes', notes],
+    ].filter(([, value]) => pdf.sanitizeText(value));
+    const detailListHtml = patientDetailRows.map(([label, value]) => `<p><strong>${label}:</strong> ${pdf.sanitizeText(value)}</p>`).join('');
 
     const patientHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #2563eb;">Your CardioVita Prescription</h2>
+        <h2 style="color: #2563eb;">Your ${clinicInfo.clinicName} Prescription</h2>
         <p>Dear ${patientName},</p>
-        <p>Your prescription has been prepared. Please find your prescription PDF attached to this email.</p>
+        <p>Your prescription has been prepared by ${clinicInfo.doctorName}. Please find your prescription PDF attached to this email.</p>
         <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
           <p><strong>Diagnosis:</strong> ${suffering}</p>
           ${detailListHtml}
         </div>
-        <p>Please follow the prescription as advised and contact us for any urgent concern.</p>
-        <p style="margin-top: 20px;">Best regards,<br><strong>CardioVita Medical Team</strong></p>
-      </div>
-    `;
+        <p>${(await settingsStore.read()).prescriptionFooter || DEFAULT_CLINIC_SETTINGS.prescriptionFooter}</p>
+        <p style="margin-top: 20px;">Best regards,<br><strong>${clinicInfo.clinicName}</strong><br>${clinicInfo.clinicAddress}<br>Phone: ${clinicInfo.clinicPhone}</p>
+      </div>`;
 
-    // Email to patient with PDF attachment
-    const patientMailOptions = {
-      from: emailUser,
+    const emailResult = await sendMailSafe({
       to: trimmedEmail,
-      subject: 'CardioVita - Your Prescription PDF',
+      subject: `${clinicInfo.clinicName} - Your Prescription PDF`,
       html: patientHtml,
-      attachments: [
-        {
-          filename: prescriptionFilename,
-          content: attachmentContent, // Use Buffer directly
-          contentType: 'application/pdf',
-        },
-      ],
-    };
+      attachments: [{ filename: `prescription-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+    });
 
-    // Email to admin
-    const adminHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #2563eb;">Prescription Sent - ${patientName}</h2>
-        <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
-          <p><strong>Patient Name:</strong> ${patientName}</p>
-          <p><strong>Email:</strong> <a href="mailto:${trimmedEmail}">${trimmedEmail}</a></p>
-          <p><strong>Phone:</strong> ${sanitizeText(patientPhone) || 'N/A'}</p>
-          <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
-          <p><strong>Diagnosis:</strong> ${suffering}</p>
-          <p><strong>Prescription Date:</strong> ${formatDateText(prescriptionDate)}</p>
-          <p><strong>Visit Date:</strong> ${formatDateText(visitDate)}</p>
-        </div>
-      </div>
-    `;
+    if (ADMIN_NOTIFICATION_EMAIL && emailResult.sent) {
+      sendMailSafe({
+        to: ADMIN_NOTIFICATION_EMAIL,
+        subject: `Prescription Sent - ${patientName}`,
+        html: `<p><strong>${patientName}</strong> (${trimmedEmail}) was sent a prescription.</p>`,
+      }).catch(() => {});
+    }
 
-    const adminMailOptions = {
-      from: emailUser,
-      to: 'ngw.designer@gmail.com',
-      subject: `Prescription Sent - ${patientName}`,
-      html: adminHtml,
-    };
-
-    // Send emails
-    await transporter.sendMail(patientMailOptions); // Use Nodemailer transporter
-    await transporter.sendMail(adminMailOptions);     // Use Nodemailer transporter
-
-    console.log('✅ Prescription emails sent successfully');
-    console.log('   Patient email:', trimmedEmail);
-    console.log('   Admin notification sent');
+    const whatsapp = await wati.sendPrescriptionWhatsApp({
+      patientName, patientPhone, pdfUrl: publicAppUrl ? publicUrl : '', clinicPhone: clinicInfo.clinicPhone,
+    });
 
     res.json({
-      success: true,
-      message: 'Prescription email sent successfully. PDF attached.',
+      success: emailResult.sent,
+      message: emailResult.sent
+        ? 'Prescription email sent successfully. PDF attached.'
+        : `Prescription PDF generated, but the email failed to send: ${emailResult.error}`,
+      prescriptionPdf: { filename, localUrl, publicUrl },
+      notifications: { email: emailResult, whatsapp },
     });
   } catch (error) {
-    console.error('❌ Prescription email error:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to send prescription email: ' + error.message,
-    });
+    console.error('❌ Prescription email error:', error?.message || error);
+    res.status(500).json({ success: false, message: `Failed to send prescription email: ${error.message}` });
   }
 });
 
-app.post('/api/send-followup', async (req, res) => {
+app.get('/api/prescriptions/:filename', (req, res) => {
+  const rawFilename = req.params.filename;
+  if (!/^[a-zA-Z0-9._-]+\.pdf$/.test(rawFilename)) {
+    return res.status(400).json({ success: false, message: 'Invalid file name.' });
+  }
+  const filePath = path.resolve(PRESCRIPTIONS_DIR, rawFilename);
+  if (!filePath.startsWith(`${PRESCRIPTIONS_DIR}${path.sep}`) || !fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, message: 'File not found.' });
+  }
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${rawFilename}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
+app.post('/api/send-followup', requireAdmin, async (req, res) => {
   try {
-    const { patientName, patientEmail, patientPhone, title, description, dueDate, type } = req.body;
+    const { patientName, patientEmail, patientPhone, title, description, dueDate, type } = req.body || {};
     const trimmedEmail = String(patientEmail || '').trim();
-    if (!patientName || !trimmedEmail || !title || !dueDate || !type) {
+    if (!patientName || !title || !dueDate || !type) {
       return res.status(400).json({ success: false, message: 'Missing required follow-up fields.' });
     }
-    const pdfBuffer = generateFollowUpPdfBuffer({ patientName, patientEmail: trimmedEmail, patientPhone, title, description, dueDate, type });
-    const followupFilename = `followup-${sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`;
+    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
+      return res.status(400).json({ success: false, message: 'Valid patient email is required to send the follow-up reminder.' });
+    }
 
-    const patientMailOptions = {
-      from: emailUser,
+    const clinicInfo = await getClinicInfo();
+    const pdfBuffer = pdf.generateFollowUpPdfBuffer({ clinicInfo, patientName, patientEmail: trimmedEmail, patientPhone, title, description, dueDate, type });
+
+    const patientHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2563eb;">Follow-up Reminder</h2>
+        <p>Dear ${patientName},</p>
+        <p>Your care team has created a follow-up task for you. Please review the attached PDF for details.</p>
+        <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
+          <p><strong>Task:</strong> ${pdf.sanitizeText(title)}</p>
+          <p><strong>Type:</strong> ${pdf.sanitizeText(type)}</p>
+          <p><strong>Due Date:</strong> ${pdf.formatDateText(dueDate)}</p>
+        </div>
+        <p>Regards,<br><strong>${clinicInfo.clinicName}</strong><br>${clinicInfo.clinicAddress}<br>Phone: ${clinicInfo.clinicPhone}</p>
+      </div>`;
+
+    const emailResult = await sendMailSafe({
       to: trimmedEmail,
-      subject: 'CardioVita - Follow-up Reminder',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">Follow-up Reminder</h2>
-          <p>Dear ${patientName},</p>
-          <p>Your care team has created a follow-up task for you. Please review the attached PDF for details.</p>
-          <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
-            <p><strong>Task:</strong> ${sanitizeText(title)}</p>
-            <p><strong>Type:</strong> ${sanitizeText(type)}</p>
-            <p><strong>Due Date:</strong> ${formatDateText(dueDate)}</p>
-          </div>
-          <p>If you have any questions, please contact us.</p>
-          <p>Regards,<br><strong>CardioVita Medical Team</strong></p>
-        </div>
-      `,
-      attachments: [{ filename: followupFilename, content: pdfBuffer, contentType: 'application/pdf' }],
-    };
+      subject: `${clinicInfo.clinicName} - Follow-up Reminder`,
+      html: patientHtml,
+      attachments: [{ filename: `followup-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+    });
 
-    const adminMailOptions = {
-      from: emailUser,
-      to: 'ngw.designer@gmail.com',
-      subject: `New Follow-up Task Created - ${patientName}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">New Follow-up Task Created</h2>
-          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
-            <p><strong>Patient Name:</strong> ${patientName}</p>
-            <p><strong>Email:</strong> <a href="mailto:${trimmedEmail}">${trimmedEmail}</a></p>
-            <p><strong>Phone:</strong> ${sanitizeText(patientPhone) || 'N/A'}</p>
-            <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;" />
-            <p><strong>Task:</strong> ${sanitizeText(title)}</p>
-            <p><strong>Type:</strong> ${sanitizeText(type)}</p>
-            <p><strong>Due Date:</strong> ${formatDateText(dueDate)}</p>
-            <p><strong>Description:</strong> ${sanitizeText(description)}</p>
-          </div>
-        </div>
-      `,
-    };
-
-    await transporter.sendMail(patientMailOptions);
-    await transporter.sendMail(adminMailOptions);
-
-    res.json({ success: true, message: 'Follow-up email sent with attached PDF.' });
+    res.json({
+      success: emailResult.sent,
+      message: emailResult.sent ? 'Follow-up email sent with attached PDF.' : `Follow-up email failed: ${emailResult.error}`,
+    });
   } catch (error) {
-    console.error('❌ Follow-up email error:', error.message);
-    res.status(500).json({ success: false, message: 'Failed to send follow-up email: ' + error.message });
+    console.error('❌ Follow-up email error:', error?.message || error);
+    res.status(500).json({ success: false, message: `Failed to send follow-up email: ${error.message}` });
   }
 });
 
-app.post('/api/send-report', async (req, res) => {
+app.post('/api/send-report', requireAdmin, async (req, res) => {
   try {
-    const { patientName, patientEmail, patientPhone, reportType, title, description, date } = req.body;
+    const { patientName, patientEmail, patientPhone, reportType, title, description, date } = req.body || {};
     const trimmedEmail = String(patientEmail || '').trim();
-    if (!patientName || !trimmedEmail || !reportType || !title || !date) {
+    if (!patientName || !reportType || !title || !date) {
       return res.status(400).json({ success: false, message: 'Missing required report fields.' });
     }
-    const pdfBuffer = generateReportPdfBuffer({ patientName, patientEmail: trimmedEmail, patientPhone, reportType, title, description, date });
-    const reportFilename = `report-${sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`;
+    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
+      return res.status(400).json({ success: false, message: 'Valid patient email is required to send the report.' });
+    }
 
-    const patientMailOptions = {
-      from: emailUser,
+    const clinicInfo = await getClinicInfo();
+    const pdfBuffer = pdf.generateReportPdfBuffer({ clinicInfo, patientName, patientEmail: trimmedEmail, patientPhone, reportType, title, description, date });
+
+    const patientHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2563eb;">Medical Report</h2>
+        <p>Dear ${patientName},</p>
+        <p>Your medical report is ready. Please review the attached PDF for details.</p>
+        <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
+          <p><strong>Report Type:</strong> ${pdf.sanitizeText(reportType)}</p>
+          <p><strong>Title:</strong> ${pdf.sanitizeText(title)}</p>
+          <p><strong>Date:</strong> ${pdf.formatDateText(date)}</p>
+        </div>
+        <p>Regards,<br><strong>${clinicInfo.clinicName}</strong><br>${clinicInfo.clinicAddress}<br>Phone: ${clinicInfo.clinicPhone}</p>
+      </div>`;
+
+    const emailResult = await sendMailSafe({
       to: trimmedEmail,
-      subject: 'CardioVita - Medical Report',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">Medical Report</h2>
-          <p>Dear ${patientName},</p>
-          <p>Your medical report is ready. Please review the attached PDF for details.</p>
-          <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
-            <p><strong>Report Type:</strong> ${sanitizeText(reportType)}</p>
-            <p><strong>Title:</strong> ${sanitizeText(title)}</p>
-            <p><strong>Date:</strong> ${formatDateText(date)}</p>
-          </div>
-          <p>If you have any questions, please contact our team.</p>
-          <p>Regards,<br><strong>CardioVita Medical Team</strong></p>
-        </div>
-      `,
-      attachments: [{ filename: reportFilename, content: pdfBuffer, contentType: 'application/pdf' }],
-    };
+      subject: `${clinicInfo.clinicName} - Medical Report`,
+      html: patientHtml,
+      attachments: [{ filename: `report-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+    });
 
-    const adminMailOptions = {
-      from: emailUser,
-      to: 'ngw.designer@gmail.com',
-      subject: `Medical Report Ready - ${patientName}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">New Medical Report Added</h2>
-          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
-            <p><strong>Patient Name:</strong> ${patientName}</p>
-            <p><strong>Email:</strong> <a href="mailto:${trimmedEmail}">${trimmedEmail}</a></p>
-            <p><strong>Phone:</strong> ${sanitizeText(patientPhone) || 'N/A'}</p>
-            <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;" />
-            <p><strong>Report Type:</strong> ${sanitizeText(reportType)}</p>
-            <p><strong>Title:</strong> ${sanitizeText(title)}</p>
-            <p><strong>Date:</strong> ${formatDateText(date)}</p>
-            <p><strong>Description:</strong> ${sanitizeText(description)}</p>
-          </div>
-        </div>
-      `,
-    };
-
-    await transporter.sendMail(patientMailOptions);
-    await transporter.sendMail(adminMailOptions);
-
-    res.json({ success: true, message: 'Medical report email sent with attached PDF.' });
+    res.json({
+      success: emailResult.sent,
+      message: emailResult.sent ? 'Medical report email sent with attached PDF.' : `Medical report email failed: ${emailResult.error}`,
+    });
   } catch (error) {
-    console.error('❌ Medical report email error:', error.message);
-    res.status(500).json({ success: false, message: 'Failed to send medical report email: ' + error.message });
+    console.error('❌ Medical report email error:', error?.message || error);
+    res.status(500).json({ success: false, message: `Failed to send medical report email: ${error.message}` });
   }
 });
 
-app.post('/api/send-billing', async (req, res) => {
+app.post('/api/send-billing', requireAdmin, async (req, res) => {
   try {
-    const { patientName, patientEmail, patientPhone, claimId, insuranceProvider, policyNumber, treatmentDate, amount, status, notes, submissionDate } = req.body;
+    const { patientName, patientEmail, patientPhone, claimId, insuranceProvider, policyNumber, treatmentDate, amount, status, notes, submissionDate } = req.body || {};
     const trimmedEmail = String(patientEmail || '').trim();
-    if (!patientName || !trimmedEmail || !claimId || !insuranceProvider || amount == null || !submissionDate) {
+    if (!patientName || !claimId || !insuranceProvider || amount === undefined || amount === null || !submissionDate) {
       return res.status(400).json({ success: false, message: 'Missing required billing fields.' });
     }
-    const pdfBuffer = generateBillingPdfBuffer({ patientName, patientEmail: trimmedEmail, patientPhone, claimId, insuranceProvider, policyNumber, treatmentDate, amount, status, notes, submissionDate });
-    const billingFilename = `billing-${sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`;
+    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
+      return res.status(400).json({ success: false, message: 'Valid patient email is required to send the billing summary.' });
+    }
 
-    const patientMailOptions = {
-      from: emailUser,
+    const clinicInfo = await getClinicInfo();
+    const pdfBuffer = pdf.generateBillingPdfBuffer({ clinicInfo, patientName, patientEmail: trimmedEmail, patientPhone, claimId, insuranceProvider, policyNumber, treatmentDate, amount, status, notes, submissionDate });
+
+    const patientHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2563eb;">Billing Summary</h2>
+        <p>Dear ${patientName},</p>
+        <p>Your billing summary and insurance claim details are attached as a PDF.</p>
+        <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
+          <p><strong>Claim ID:</strong> ${pdf.sanitizeText(claimId)}</p>
+          <p><strong>Insurance Provider:</strong> ${pdf.sanitizeText(insuranceProvider)}</p>
+          <p><strong>Amount:</strong> ${pdf.formatMoneyText(amount)}</p>
+          <p><strong>Status:</strong> ${pdf.sanitizeText(status)}</p>
+        </div>
+        <p>Regards,<br><strong>${clinicInfo.clinicName}</strong><br>${clinicInfo.clinicAddress}<br>Phone: ${clinicInfo.clinicPhone}</p>
+      </div>`;
+
+    const emailResult = await sendMailSafe({
       to: trimmedEmail,
-      subject: 'CardioVita - Billing Summary',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">Billing Summary</h2>
-          <p>Dear ${patientName},</p>
-          <p>Your billing summary and insurance claim details are attached as a PDF.</p>
-          <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
-            <p><strong>Claim ID:</strong> ${sanitizeText(claimId)}</p>
-            <p><strong>Insurance Provider:</strong> ${sanitizeText(insuranceProvider)}</p>
-            <p><strong>Amount:</strong> ₹${sanitizeText(String(amount))}</p>
-            <p><strong>Status:</strong> ${sanitizeText(status)}</p>
-          </div>
-          <p>If you have questions about this claim, please contact our billing team.</p>
-          <p>Regards,<br><strong>CardioVita Medical Team</strong></p>
-        </div>
-      `,
-      attachments: [{ filename: billingFilename, content: pdfBuffer, contentType: 'application/pdf' }],
-    };
+      subject: `${clinicInfo.clinicName} - Billing Summary`,
+      html: patientHtml,
+      attachments: [{ filename: `billing-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+    });
 
-    const adminMailOptions = {
-      from: emailUser,
-      to: 'ngw.designer@gmail.com',
-      subject: `Billing Summary Created - ${patientName}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #2563eb;">New Billing Summary Created</h2>
-          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
-            <p><strong>Patient Name:</strong> ${patientName}</p>
-            <p><strong>Email:</strong> <a href="mailto:${trimmedEmail}">${trimmedEmail}</a></p>
-            <p><strong>Phone:</strong> ${sanitizeText(patientPhone) || 'N/A'}</p>
-            <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;" />
-            <p><strong>Claim ID:</strong> ${sanitizeText(claimId)}</p>
-            <p><strong>Insurance Provider:</strong> ${sanitizeText(insuranceProvider)}</p>
-            <p><strong>Policy Number:</strong> ${sanitizeText(policyNumber) || 'N/A'}</p>
-            <p><strong>Treatment Date:</strong> ${formatDateText(treatmentDate)}</p>
-            <p><strong>Amount:</strong> ₹${sanitizeText(String(amount))}</p>
-            <p><strong>Status:</strong> ${sanitizeText(status)}</p>
-            <p><strong>Notes:</strong> ${sanitizeText(notes)}</p>
-          </div>
-        </div>
-      `,
-    };
-
-    await transporter.sendMail(patientMailOptions);
-    await transporter.sendMail(adminMailOptions);
-
-    res.json({ success: true, message: 'Billing email sent with attached PDF.' });
+    res.json({
+      success: emailResult.sent,
+      message: emailResult.sent ? 'Billing email sent with attached PDF.' : `Billing email failed: ${emailResult.error}`,
+    });
   } catch (error) {
-    console.error('❌ Billing email error:', error.message);
-    res.status(500).json({ success: false, message: 'Failed to send billing email: ' + error.message });
+    console.error('❌ Billing email error:', error?.message || error);
+    res.status(500).json({ success: false, message: `Failed to send billing email: ${error.message}` });
   }
 });
 
-// Catch-all for anything not matched above. Registered last so it never shadows a real route.
+// ---------------------------------------------------------------------------
+
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
     return res.status(404).json({ success: false, message: 'API route not found.' });
@@ -1046,8 +905,10 @@ app.use((req, res) => {
   res.redirect('/');
 });
 
-const PORT = Number(process.env.PORT) || 5004;
+const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 Email server running on http://0.0.0.0:${PORT}`);
-  console.log('   Sending emails to: ngw.designer@gmail.com\n');
+  console.log(`\n🚀 Dr. Rana Dental Clinic API running on http://0.0.0.0:${PORT}`);
+  console.log(`   Data directory: ${DATA_DIR}`);
+  console.log(`   Email configured: ${mailer.configured ? 'yes' : 'no'}`);
+  console.log(`   WATI configured: ${wati.configured ? 'yes' : 'no'}\n`);
 });

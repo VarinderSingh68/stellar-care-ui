@@ -1,4 +1,11 @@
 import { API_CONFIG } from "./config";
+import { apiGet, apiPost, apiPut, clearAdminToken, dispatchWindowEvent, isAdminAuthenticated, setAdminToken } from "./api";
+
+// NOTE: this used to be a localStorage-backed module -- every collection
+// below now lives on the backend (see email-server.cjs + server/store.cjs)
+// so data is shared across every visitor/device instead of being trapped in
+// one admin's browser. Reads are now async (they hit the network), which is
+// why every component that uses this module goes through react-query.
 
 export interface AdminPatient {
   id: string;
@@ -96,11 +103,6 @@ export interface ClinicSettings {
   reminderLeadHours: string;
 }
 
-export interface AdminCredentials {
-  username: string;
-  password: string;
-}
-
 export interface PrescriptionEmailPayload {
   patientName: string;
   patientEmail?: string;
@@ -129,26 +131,13 @@ export interface PrescriptionEmailResult {
   };
 }
 
-const PATIENTS_KEY = "cardiovita.admin.patients";
-const MEDIA_KEY = "cardiovita.admin.media";
-const AUTH_KEY = "cardiovita.admin.auth";
-const APPOINTMENTS_KEY = "cardiovita.admin.appointments";
-const TREATMENT_PLANS_KEY = "cardiovita.admin.treatment-plans";
-const CLINICAL_NOTES_KEY = "cardiovita.admin.clinical-notes";
-const STAFF_KEY = "cardiovita.admin.staff";
-const SETTINGS_KEY = "cardiovita.admin.settings";
-const CREDENTIALS_KEY = "cardiovita.admin.credentials";
-
-export const ADMIN_USERNAME = "admin";
-export const ADMIN_PASSWORD = "password123";
-
 export const DEFAULT_CLINIC_SETTINGS: ClinicSettings = {
   clinicName: "Dr. Rana Dental Clinic",
   doctorName: "Dr. Rana",
-  phone: "",
+  phone: "090414 81946",
   whatsappNumber: "",
   email: "",
-  address: "New Mata Gujri Enclave, Janta Nagar, Kharar",
+  address: "New Mata Gujri Enclave, Gurudwara Sahib Road, Janta Nagar, Mundi Kharar, Kharar, Punjab 140301",
   openingTime: "10:00",
   closingTime: "19:00",
   workingDays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
@@ -156,50 +145,62 @@ export const DEFAULT_CLINIC_SETTINGS: ClinicSettings = {
   reminderLeadHours: "24",
 };
 
-const readJson = <T>(key: string, fallback: T): T => {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
+// --- Patients ---------------------------------------------------------
+
+export const getPatients = (): Promise<AdminPatient[]> => apiGet<AdminPatient[]>("/api/data/patients", "admin");
+
+export const setPatients = async (patients: AdminPatient[]): Promise<void> => {
+  await apiPut("/api/data/patients", patients, "admin");
+  dispatchWindowEvent("patientsUpdated");
 };
 
-const writeJson = <T>(key: string, value: T, eventName?: string) => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(key, JSON.stringify(value));
-  if (eventName) {
-    window.dispatchEvent(new Event(eventName));
-  }
+// --- Media (public read so every visitor sees it, admin-only write) ---
+
+export const getMediaItems = (): Promise<AdminMediaItem[]> => apiGet<AdminMediaItem[]>("/api/media");
+
+export const setMediaItems = async (media: AdminMediaItem[]): Promise<void> => {
+  await apiPut("/api/data/media", media, "admin");
+  dispatchWindowEvent("mediaUpdated");
 };
 
-export const getPatients = (): AdminPatient[] => {
-  return readJson<AdminPatient[]>(PATIENTS_KEY, []);
+// Media uploaded through /api/admin/media-upload comes back as a path
+// relative to the API server (e.g. "/uploads/media/xyz.png"). The frontend
+// and API are separate Render services with different origins, so any
+// relative URL needs the API's base URL prefixed before it can be used in
+// an <img>/<video> src. A URL the admin pasted in directly (http/https) is
+// left untouched.
+export const resolveMediaUrl = (url: string): string => {
+  if (!url) return url;
+  if (/^https?:\/\//i.test(url) || url.startsWith("data:")) return url;
+  const base = API_CONFIG.baseUrl?.replace(/\/+$/, "") || "";
+  return `${base}${url.startsWith("/") ? "" : "/"}${url}`;
 };
 
-export const setPatients = (patients: AdminPatient[]) => {
-  writeJson(PATIENTS_KEY, patients, "patientsUpdated");
+export const uploadMediaFile = async (file: File): Promise<{ url: string }> => {
+  const dataBase64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const commaIndex = result.indexOf(",");
+      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Could not read file."));
+    reader.readAsDataURL(file);
+  });
+
+  return apiPost<{ success: boolean; url: string }>(
+    "/api/admin/media-upload",
+    { contentType: file.type, dataBase64 },
+    "admin",
+  );
 };
 
-export const getMediaItems = (): AdminMediaItem[] => {
-  return readJson<AdminMediaItem[]>(MEDIA_KEY, []);
-};
-
-export const setMediaItems = (media: AdminMediaItem[]) => {
-  writeJson(MEDIA_KEY, media, "mediaUpdated");
-};
+// --- Bookings / appointments -------------------------------------------
 
 export const getBookings = async (): Promise<AdminAppointment[]> => {
   try {
-    const response = await fetch(`${API_CONFIG.baseUrl}/api/bookings`);
-    if (!response.ok) {
-      console.error("Failed to fetch bookings");
-      return [];
-    }
-    const bookings = await response.json();
-    // Map server data to the AdminAppointment interface
-    return bookings.map((b: any) => ({
+    const bookings = await apiGet<any[]>("/api/bookings", "admin");
+    return bookings.map((b) => ({
       id: b.id,
       patientId: b.patientId,
       patientName: b.patientName,
@@ -219,107 +220,111 @@ export const getBookings = async (): Promise<AdminAppointment[]> => {
   }
 };
 
-export const getTreatmentPlans = (): TreatmentPlan[] => {
-  return readJson<TreatmentPlan[]>(TREATMENT_PLANS_KEY, []);
+// --- Treatment plans / clinical notes / staff ---------------------------
+
+export const getTreatmentPlans = (): Promise<TreatmentPlan[]> => apiGet<TreatmentPlan[]>("/api/data/treatment-plans", "admin");
+
+export const setTreatmentPlans = (plans: TreatmentPlan[]): Promise<void> =>
+  apiPut("/api/data/treatment-plans", plans, "admin").then(() => undefined);
+
+export const getClinicalNotes = (): Promise<ClinicalNote[]> => apiGet<ClinicalNote[]>("/api/data/clinical-notes", "admin");
+
+export const setClinicalNotes = (notes: ClinicalNote[]): Promise<void> =>
+  apiPut("/api/data/clinical-notes", notes, "admin").then(() => undefined);
+
+export const getStaffMembers = (): Promise<StaffMember[]> => apiGet<StaffMember[]>("/api/data/staff", "admin");
+
+export const setStaffMembers = (staff: StaffMember[]): Promise<void> =>
+  apiPut("/api/data/staff", staff, "admin").then(() => undefined);
+
+// --- Clinic settings (public read, admin-only write) ---------------------
+
+export const getClinicSettings = async (): Promise<ClinicSettings> => {
+  try {
+    const settings = await apiGet<Partial<ClinicSettings>>("/api/settings");
+    return { ...DEFAULT_CLINIC_SETTINGS, ...settings };
+  } catch (error) {
+    console.error("Error fetching clinic settings:", error);
+    return DEFAULT_CLINIC_SETTINGS;
+  }
 };
 
-export const setTreatmentPlans = (plans: TreatmentPlan[]) => {
-  writeJson(TREATMENT_PLANS_KEY, plans, "treatmentPlansUpdated");
+export const setClinicSettings = async (settings: ClinicSettings): Promise<void> => {
+  await apiPut("/api/settings", settings, "admin");
+  dispatchWindowEvent("clinicSettingsUpdated");
 };
 
-export const getClinicalNotes = (): ClinicalNote[] => {
-  return readJson<ClinicalNote[]>(CLINICAL_NOTES_KEY, []);
-};
+// --- Admin auth -----------------------------------------------------------
 
-export const setClinicalNotes = (notes: ClinicalNote[]) => {
-  writeJson(CLINICAL_NOTES_KEY, notes, "clinicalNotesUpdated");
-};
+export const isAdminLoggedIn = (): boolean => isAdminAuthenticated();
 
-export const getStaffMembers = (): StaffMember[] => {
-  return readJson<StaffMember[]>(STAFF_KEY, []);
-};
-
-export const setStaffMembers = (staff: StaffMember[]) => {
-  writeJson(STAFF_KEY, staff, "staffUpdated");
-};
-
-export const getClinicSettings = (): ClinicSettings => {
-  return {
-    ...DEFAULT_CLINIC_SETTINGS,
-    ...readJson<Partial<ClinicSettings>>(SETTINGS_KEY, {}),
-  };
-};
-
-export const setClinicSettings = (settings: ClinicSettings) => {
-  writeJson(SETTINGS_KEY, settings, "clinicSettingsUpdated");
-};
-
-export const getAdminCredentials = (): AdminCredentials => {
-  return readJson<AdminCredentials>(CREDENTIALS_KEY, {
-    username: ADMIN_USERNAME,
-    password: ADMIN_PASSWORD,
-  });
-};
-
-export const setAdminCredentials = (credentials: AdminCredentials) => {
-  writeJson(CREDENTIALS_KEY, credentials, "adminCredentialsUpdated");
-};
-
-export const isAdminLoggedIn = () => {
-  if (typeof window === "undefined") return false;
-  return sessionStorage.getItem(AUTH_KEY) === "true";
-};
-
-export const loginAdmin = (username: string, password: string) => {
-  const credentials = getAdminCredentials();
-  if (username === credentials.username && password === credentials.password) {
-    if (typeof window !== "undefined") {
-      sessionStorage.setItem(AUTH_KEY, "true");
+export const loginAdmin = async (username: string, password: string): Promise<boolean> => {
+  try {
+    const result = await apiPost<{ success: boolean; token: string }>("/api/admin/login", { username, password });
+    if (result?.success && result.token) {
+      setAdminToken(result.token);
+      return true;
     }
-    return true;
+    return false;
+  } catch {
+    return false;
   }
-  return false;
 };
 
-export const logoutAdmin = () => {
-  if (typeof window !== "undefined") {
-    sessionStorage.removeItem(AUTH_KEY);
+export const logoutAdmin = (): void => {
+  clearAdminToken();
+};
+
+export const getAdminUsername = async (): Promise<string> => {
+  const result = await apiGet<{ success: boolean; username: string }>("/api/admin/me", "admin");
+  return result.username;
+};
+
+export const changeAdminCredentials = async (
+  username: string,
+  password?: string,
+): Promise<{ success: boolean; message?: string }> => {
+  try {
+    const result = await apiPost<{ success: boolean; username: string }>(
+      "/api/admin/change-credentials",
+      { username, password },
+      "admin",
+    );
+    return { success: result.success };
+  } catch (error) {
+    return { success: false, message: error instanceof Error ? error.message : "Failed to update credentials." };
   }
 };
+
+// --- Appointments (admin-authenticated create/update; list comes from
+// getBookings above) --------------------------------------------------------
+
+export const createAppointment = async (appointment: AdminAppointment): Promise<void> => {
+  await apiPost("/api/appointments", appointment, "admin");
+};
+
+export const updateAppointmentStatus = async (
+  appointmentId: string,
+  updates: Partial<AdminAppointment>,
+): Promise<void> => {
+  await apiPut(`/api/appointments/${appointmentId}`, updates, "admin");
+};
+
+// --- Notifications --------------------------------------------------------
 
 export const sendPrescriptionEmail = async (
   payload: PrescriptionEmailPayload,
 ): Promise<PrescriptionEmailResult> => {
   try {
-    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.prescription}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    const result = await response.json().catch(() => null);
-
-    if (response.ok && result?.success !== false) {
-      return {
-        success: true,
-        message: result?.message || "Prescription notification sent successfully.",
-        prescriptionPdf: result?.prescriptionPdf,
-      };
-    }
-
+    const result = await apiPost<PrescriptionEmailResult>(API_CONFIG.endpoints.prescription, payload, "admin");
     return {
-      success: false,
-      message: result?.message || "Patient record saved, but prescription notification failed.",
+      success: Boolean(result?.success),
+      message: result?.message || "Prescription notification processed.",
+      prescriptionPdf: result?.prescriptionPdf,
     };
   } catch (error) {
     console.error("Prescription notification send error:", error);
-    let message = "Patient record saved, but could not reach notification server.";
-    // Provide a more specific error for the most common failure case.
-    if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-      message = "Patient record saved, but couldn't connect to the notification server. Is it running? (Hint: `node email-server.cjs`)";
-    }
+    const message = error instanceof Error ? error.message : "Could not reach the notification server.";
     return { success: false, message };
   }
 };

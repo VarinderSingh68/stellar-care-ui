@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut, FileText, CheckCircle, Clock, AlertCircle, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,43 +9,69 @@ import { useToast } from "@/hooks/use-toast";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import {
-  getFollowUpsByPatientId,
-  getConsentFormsByPatientId,
-  getMedicalReportsByPatientId,
-  getInsuranceBillingsByPatientId,
-  updateFollowUp,
-  signConsentForm,
-  type PatientRecord,
+  getCurrentPatient,
+  getMyFollowUps,
+  getMyConsentForms,
+  getMyMedicalReports,
+  getMyInsuranceBillings,
+  markMyFollowUpComplete,
+  signMyConsentForm,
+  isPatientLoggedIn,
+  logoutPatient,
   type FollowUp,
-  type ConsentForm,
 } from "@/lib/patient-portal";
 
 const PatientPortalDashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [patient, setPatient] = useState<PatientRecord | null>(null);
-  const [followUps, setFollowUps] = useState<FollowUp[]>([]);
-  const [consentForms, setConsentForms] = useState<ConsentForm[]>([]);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
-    const auth = localStorage.getItem("cardiovita.patient-auth");
-    if (!auth) {
+    if (!isPatientLoggedIn()) {
       navigate("/patient-portal");
-      return;
     }
-
-    const patientData = JSON.parse(auth) as PatientRecord;
-    setPatient(patientData);
-
-    // Load follow-ups
-    setFollowUps(getFollowUpsByPatientId(patientData.id));
-
-    // Load consent forms
-    setConsentForms(getConsentFormsByPatientId(patientData.id));
   }, [navigate]);
 
+  const { data: patient, isLoading: patientLoading } = useQuery({
+    queryKey: ["myPatientProfile"],
+    queryFn: getCurrentPatient,
+    enabled: isPatientLoggedIn(),
+  });
+
+  useEffect(() => {
+    if (!patientLoading && isPatientLoggedIn() && patient === null) {
+      // Token exists but is invalid/expired -- send the patient back to login.
+      logoutPatient();
+      navigate("/patient-portal");
+    }
+  }, [patient, patientLoading, navigate]);
+
+  const { data: followUps = [] } = useQuery({
+    queryKey: ["myFollowUps"],
+    queryFn: getMyFollowUps,
+    enabled: Boolean(patient),
+  });
+
+  const { data: consentForms = [] } = useQuery({
+    queryKey: ["myConsentForms"],
+    queryFn: getMyConsentForms,
+    enabled: Boolean(patient),
+  });
+
+  const { data: medicalReports = [] } = useQuery({
+    queryKey: ["myMedicalReports"],
+    queryFn: getMyMedicalReports,
+    enabled: Boolean(patient),
+  });
+
+  const { data: insuranceBillings = [] } = useQuery({
+    queryKey: ["myInsuranceBillings"],
+    queryFn: getMyInsuranceBillings,
+    enabled: Boolean(patient),
+  });
+
   const handleLogout = () => {
-    localStorage.removeItem("cardiovita.patient-auth");
+    logoutPatient();
     navigate("/patient-portal");
     toast({
       title: "Logged out",
@@ -52,25 +79,38 @@ const PatientPortalDashboard = () => {
     });
   };
 
-  const handleMarkComplete = (followUpId: string) => {
-    updateFollowUp(followUpId, {
-      status: "completed",
-      completedDate: new Date().toISOString(),
-    });
-    setFollowUps(getFollowUpsByPatientId(patient!.id));
-    toast({
-      title: "Success",
-      description: "Follow-up marked as completed",
-    });
+  const handleMarkComplete = async (followUpId: string) => {
+    try {
+      await markMyFollowUpComplete(followUpId);
+      await queryClient.invalidateQueries({ queryKey: ["myFollowUps"] });
+      toast({
+        title: "Success",
+        description: "Follow-up marked as completed",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Could not update the follow-up.",
+        variant: "destructive",
+      });
+    }
   };
 
-  const handleSignConsent = (consentId: string) => {
-    signConsentForm(consentId);
-    setConsentForms(getConsentFormsByPatientId(patient!.id));
-    toast({
-      title: "Success",
-      description: "Consent form signed successfully",
-    });
+  const handleSignConsent = async (consentId: string) => {
+    try {
+      await signMyConsentForm(consentId);
+      await queryClient.invalidateQueries({ queryKey: ["myConsentForms"] });
+      toast({
+        title: "Success",
+        description: "Consent form signed successfully",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Could not sign the consent form.",
+        variant: "destructive",
+      });
+    }
   };
 
   const getFollowUpIcon = (type: FollowUp["type"]) => {
@@ -292,13 +332,13 @@ const PatientPortalDashboard = () => {
                   <CardDescription>View your lab reports and medical records</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {getMedicalReportsByPatientId(patient.id).length === 0 ? (
+                  {medicalReports.length === 0 ? (
                     <div className="text-center py-8">
                       <p className="text-muted-foreground">No reports available yet</p>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {getMedicalReportsByPatientId(patient.id).map((report) => (
+                      {medicalReports.map((report) => (
                         <div key={report.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-accent">
                           <div className="flex items-center gap-2">
                             <FileText className="w-5 h-5 text-primary" />
@@ -308,8 +348,10 @@ const PatientPortalDashboard = () => {
                             </div>
                           </div>
                           {report.fileUrl && (
-                            <Button size="sm" variant="outline">
-                              <Download className="w-4 h-4" />
+                            <Button size="sm" variant="outline" asChild>
+                              <a href={report.fileUrl} target="_blank" rel="noreferrer">
+                                <Download className="w-4 h-4" />
+                              </a>
                             </Button>
                           )}
                         </div>
@@ -328,13 +370,13 @@ const PatientPortalDashboard = () => {
                   <CardDescription>Track your insurance claims and billing status</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {getInsuranceBillingsByPatientId(patient.id).length === 0 ? (
+                  {insuranceBillings.length === 0 ? (
                     <div className="text-center py-8">
                       <p className="text-muted-foreground">No billing records yet</p>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {getInsuranceBillingsByPatientId(patient.id).map((billing) => (
+                      {insuranceBillings.map((billing) => (
                         <div key={billing.id} className="p-3 border rounded-lg">
                           <div className="flex items-start justify-between mb-2">
                             <div>

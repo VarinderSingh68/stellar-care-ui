@@ -1,10 +1,11 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ImagePlus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AdminMediaItem, getMediaItems, setMediaItems } from "@/lib/admin";
+import { AdminMediaItem, getMediaItems, resolveMediaUrl, setMediaItems, uploadMediaFile } from "@/lib/admin";
 import { mutedTextClass, nativeSelectClass, panelClass } from "./adminFormatters";
 
 const defaultMediaState = {
@@ -14,20 +15,24 @@ const defaultMediaState = {
 };
 
 const AdminMediaSection = () => {
-  const [mediaItems, setMediaState] = useState<AdminMediaItem[]>([]);
+  const queryClient = useQueryClient();
+  const { data: mediaItems = [] } = useQuery<AdminMediaItem[]>({
+    queryKey: ["media"],
+    queryFn: getMediaItems,
+  });
   const [newMedia, setNewMedia] = useState(defaultMediaState);
   const [message, setMessage] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
 
-  useEffect(() => {
-    setMediaState(getMediaItems());
-  }, []);
+  const saveMediaMutation = useMutation({
+    mutationFn: (updated: AdminMediaItem[]) => setMediaItems(updated),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["publicMedia"] });
+    },
+  });
 
-  const saveMedia = (updated: AdminMediaItem[]) => {
-    setMediaItems(updated);
-    setMediaState(updated);
-  };
-
-  const createMedia = () => {
+  const createMedia = async () => {
     const trimmedTitle = newMedia.title.trim();
     const trimmedUrl = newMedia.url.trim();
     if (!trimmedTitle || !trimmedUrl) {
@@ -42,27 +47,40 @@ const AdminMediaSection = () => {
       type: newMedia.type,
     };
 
-    saveMedia([mediaItem, ...mediaItems]);
-    setNewMedia(defaultMediaState);
-    setMessage("Media item saved. It will appear on the review page.");
+    try {
+      await saveMediaMutation.mutateAsync([mediaItem, ...mediaItems]);
+      setNewMedia(defaultMediaState);
+      setMessage("Media item published. It's now visible to every visitor on the testimonials page.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to publish media item.");
+    }
   };
 
-  const handleFileUpload = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const dataUrl = e.target?.result as string;
-      setNewMedia((prev) => ({ ...prev, url: dataUrl }));
-      setMessage("Image/video loaded. Click 'Publish media' to save it.");
-    };
-    reader.readAsDataURL(file);
+    setIsUploading(true);
+    setMessage("Uploading...");
+    try {
+      const { url } = await uploadMediaFile(file);
+      setNewMedia((prev) => ({ ...prev, url }));
+      setMessage("File uploaded. Click 'Publish media' to make it visible on the testimonials page.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "File upload failed.");
+    } finally {
+      setIsUploading(false);
+      event.target.value = "";
+    }
   };
 
-  const deleteMedia = (mediaId: string) => {
-    saveMedia(mediaItems.filter((item) => item.id !== mediaId));
-    setMessage("Media item deleted and removed from the testimonials page.");
+  const deleteMedia = async (mediaId: string) => {
+    try {
+      await saveMediaMutation.mutateAsync(mediaItems.filter((item) => item.id !== mediaId));
+      setMessage("Media item deleted and removed from the testimonials page.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to delete media item.");
+    }
   };
 
   return (
@@ -76,7 +94,7 @@ const AdminMediaSection = () => {
               <ImagePlus className="h-5 w-5 text-primary" />
               Publish review media
             </CardTitle>
-            <p className={mutedTextClass}>Add images or videos from your computer or provide a URL. They will show on the review page.</p>
+            <p className={mutedTextClass}>Upload images or videos from your computer or provide a URL. They will show on the review page for every visitor.</p>
           </CardHeader>
           <CardContent className="grid gap-4">
             <div>
@@ -97,14 +115,16 @@ const AdminMediaSection = () => {
                 type="file"
                 accept={newMedia.type === "image" ? "image/*" : "video/*"}
                 onChange={handleFileUpload}
+                disabled={isUploading}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-muted-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-semibold file:text-primary-foreground hover:file:bg-primary/90"
               />
+              <p className="mt-1 text-xs text-muted-foreground">Up to 15MB. For larger videos, host them elsewhere and paste the URL below instead.</p>
             </div>
             <div>
               <Label htmlFor="media-url">Or paste image/video URL</Label>
               <Input id="media-url" value={newMedia.url} onChange={(event) => setNewMedia({ ...newMedia, url: event.target.value })} placeholder="https://example.com/path/to/file.jpg" />
             </div>
-            <Button onClick={createMedia} className="gap-2">
+            <Button onClick={createMedia} className="gap-2" disabled={saveMediaMutation.isPending || isUploading}>
               <ImagePlus className="h-4 w-4" />
               Publish media
             </Button>
@@ -114,7 +134,7 @@ const AdminMediaSection = () => {
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Published review media</CardTitle>
-            <p className={mutedTextClass}>Media added here will appear on the testimonials/review page.</p>
+            <p className={mutedTextClass}>Media added here is publicly visible to everyone on the testimonials/review page.</p>
           </CardHeader>
           <CardContent>
             {mediaItems.length === 0 ? (
@@ -127,11 +147,11 @@ const AdminMediaSection = () => {
                       <div className="min-w-0 flex-1">
                         <p className="font-semibold text-foreground">{item.title}</p>
                         <p className={mutedTextClass}>Type: {item.type}</p>
-                        <a href={item.url} target="_blank" rel="noreferrer" className="text-sm text-primary hover:underline">
+                        <a href={resolveMediaUrl(item.url)} target="_blank" rel="noreferrer" className="text-sm text-primary hover:underline">
                           Open media URL
                         </a>
                       </div>
-                      <Button variant="destructive" size="sm" className="gap-2" onClick={() => deleteMedia(item.id)}>
+                      <Button variant="destructive" size="sm" className="gap-2" onClick={() => deleteMedia(item.id)} disabled={saveMediaMutation.isPending}>
                         <Trash2 className="h-3.5 w-3.5" />
                         Delete
                       </Button>

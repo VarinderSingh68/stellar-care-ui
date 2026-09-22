@@ -1,27 +1,46 @@
 services:
   - type: web
-    name: stellar-care-api
+    name: dr-rana-dental-api
     env: node
     plan: free
     buildCommand: npm install --include=dev
     startCommand: node email-server.cjs
+    # NOTE: Render's free web services have an EPHEMERAL filesystem -- every
+    # redeploy/restart wipes anything written to disk, including the JSON
+    # data store (patients, appointments, prescriptions, uploaded media,
+    # etc.) and the generated session secret. To keep data across deploys,
+    # attach a Render persistent Disk to this service and point DATA_DIR at
+    # its mount path (uncomment the "disk" block below and add DATA_DIR).
+    # disk:
+    #   name: clinic-data
+    #   mountPath: /var/data
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
+      # - key: DATA_DIR
+      #   value: /var/data
+      - key: SESSION_SECRET
+        generateValue: true
       - key: EMAIL_USER
         sync: false
       - key: EMAIL_PASSWORD
         sync: false
+      - key: ADMIN_NOTIFICATION_EMAIL
+        sync: false
+      - key: WATI_API_ENDPOINT
+        sync: false
+      - key: WATI_ACCESS_TOKEN
+        sync: false
 
   - type: static
-    name: stellar-care-ui
+    name: dr-rana-dental-ui
     buildCommand: npm install --include=dev && npm run build
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        value: https://stellar-care-api.onrender.com
+        value: https://dr-rana-dental-api.onrender.com
     routes:
       - type: rewrite
         source: /*

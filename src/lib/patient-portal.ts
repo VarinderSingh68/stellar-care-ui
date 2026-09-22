@@ -1,10 +1,26 @@
 import { API_CONFIG } from "./config";
+import {
+  apiGet,
+  apiPatch,
+  apiPost,
+  apiPut,
+  clearPatientToken,
+  dispatchWindowEvent,
+  isPatientAuthenticated,
+  setPatientToken,
+} from "./api";
+
+// NOTE: this used to be a localStorage-backed module. Every collection here
+// now lives on the backend so records survive across devices/browsers and
+// so a patient's own portal account is a real, password-protected account
+// instead of a plaintext object stored in the browser.
+
 export interface PatientRecord {
   id: string;
   patientName: string;
   patientEmail: string;
   patientPhone: string;
-  password?: string;
+  password?: string; // never populated on records returned from the server
   gender?: string;
   age?: string;
   address?: string;
@@ -69,196 +85,149 @@ export interface PatientTemplate {
   consentForms: Omit<ConsentForm, "id" | "patientId" | "patientName" | "patientEmail" | "signatureDate" | "isSigned" | "createdDate">[];
 }
 
-const PATIENT_PORTAL_KEY = "cardiovita.patient-portal";
-const FOLLOW_UPS_KEY = "cardiovita.follow-ups";
-const CONSENT_FORMS_KEY = "cardiovita.consent-forms";
-const INSURANCE_BILLING_KEY = "cardiovita.insurance-billing";
-const MEDICAL_REPORTS_KEY = "cardiovita.medical-reports";
+const createId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-// Patient Portal Management
-export const getPatientPortalRecords = (): PatientRecord[] => {
-  if (typeof window === "undefined") return [];
+// --- Patient portal auth --------------------------------------------------
+
+export const isPatientLoggedIn = (): boolean => isPatientAuthenticated();
+
+export const registerPatient = async (input: {
+  name: string;
+  email: string;
+  phone: string;
+  password: string;
+  age?: string;
+  gender?: string;
+  address?: string;
+}): Promise<{ success: boolean; patient?: PatientRecord; message?: string }> => {
   try {
-    const raw = localStorage.getItem(PATIENT_PORTAL_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+    const result = await apiPost<{ success: boolean; token: string; patient: PatientRecord }>("/api/patient/register", {
+      patientName: input.name,
+      patientEmail: input.email,
+      patientPhone: input.phone,
+      password: input.password,
+      age: input.age,
+      gender: input.gender,
+      address: input.address,
+    });
+    setPatientToken(result.token);
+    return { success: true, patient: result.patient };
+  } catch (error) {
+    return { success: false, message: error instanceof Error ? error.message : "Could not create account." };
   }
 };
 
-export const setPatientPortalRecords = (records: PatientRecord[]) => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(PATIENT_PORTAL_KEY, JSON.stringify(records));
-};
-
-export const getPatientByEmail = (email: string): PatientRecord | null => {
-  const records = getPatientPortalRecords();
-  return records.find((p) => p.patientEmail === email.toLowerCase()) || null;
-};
-
-export const createPatientRecord = (patient: PatientRecord) => {
-  const records = getPatientPortalRecords();
-  const newRecord = {
-    ...patient,
-    id: `patient-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  };
-  records.push(newRecord);
-  setPatientPortalRecords(records);
-  return newRecord;
-};
-
-// Follow-up Management
-export const getFollowUps = (): FollowUp[] => {
-  if (typeof window === "undefined") return [];
+export const loginPatient = async (
+  email: string,
+  password: string,
+): Promise<{ success: boolean; patient?: PatientRecord; message?: string }> => {
   try {
-    const raw = localStorage.getItem(FOLLOW_UPS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+    const result = await apiPost<{ success: boolean; token: string; patient: PatientRecord }>("/api/patient/login", {
+      email,
+      password,
+    });
+    setPatientToken(result.token);
+    return { success: true, patient: result.patient };
+  } catch (error) {
+    return { success: false, message: error instanceof Error ? error.message : "Invalid email or password." };
   }
 };
 
-export const setFollowUps = (followUps: FollowUp[]) => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(FOLLOW_UPS_KEY, JSON.stringify(followUps));
-  window.dispatchEvent(new Event("followUpUpdated"));
+export const logoutPatient = (): void => {
+  clearPatientToken();
 };
 
-export const getFollowUpsByPatientId = (patientId: string): FollowUp[] => {
-  return getFollowUps().filter((f) => f.patientId === patientId);
+export const getCurrentPatient = async (): Promise<PatientRecord | null> => {
+  try {
+    const result = await apiGet<{ success: boolean; patient: PatientRecord }>("/api/patient/me", "patient");
+    return result.patient;
+  } catch {
+    return null;
+  }
 };
 
-export const createFollowUp = (followUp: Omit<FollowUp, "id">) => {
-  const followUps = getFollowUps();
-  const newFollowUp: FollowUp = {
-    ...followUp,
-    id: `followup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  };
-  followUps.push(newFollowUp);
-  setFollowUps(followUps);
+// --- Patient portal records (admin-side directory, read-only) ------------
+
+export const getPatientPortalRecords = (): Promise<PatientRecord[]> => apiGet<PatientRecord[]>("/api/data/portal-patients", "admin");
+
+// --- Follow-up Management --------------------------------------------------
+
+export const getFollowUps = (): Promise<FollowUp[]> => apiGet<FollowUp[]>("/api/data/follow-ups", "admin");
+
+export const getMyFollowUps = (): Promise<FollowUp[]> => apiGet<FollowUp[]>("/api/data/follow-ups", "patient");
+
+export const createFollowUp = async (followUp: Omit<FollowUp, "id">): Promise<FollowUp> => {
+  const current = await getFollowUps();
+  const newFollowUp: FollowUp = { ...followUp, id: createId("followup") };
+  await apiPut("/api/data/follow-ups", [...current, newFollowUp], "admin");
+  dispatchWindowEvent("followUpUpdated");
   return newFollowUp;
 };
 
-export const updateFollowUp = (id: string, updates: Partial<FollowUp>) => {
-  const followUps = getFollowUps();
-  const index = followUps.findIndex((f) => f.id === id);
-  if (index !== -1) {
-    followUps[index] = { ...followUps[index], ...updates };
-    setFollowUps(followUps);
-    return followUps[index];
-  }
-  return null;
+export const updateFollowUp = async (id: string, updates: Partial<FollowUp>): Promise<FollowUp | null> => {
+  const current = await getFollowUps();
+  const index = current.findIndex((item) => item.id === id);
+  if (index === -1) return null;
+  const next = [...current];
+  next[index] = { ...next[index], ...updates };
+  await apiPut("/api/data/follow-ups", next, "admin");
+  dispatchWindowEvent("followUpUpdated");
+  return next[index];
 };
 
-// Consent Forms Management
-export const getConsentForms = (): ConsentForm[] => {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(CONSENT_FORMS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+export const markMyFollowUpComplete = async (id: string): Promise<void> => {
+  await apiPatch(`/api/patient/follow-ups/${id}`, { status: "completed", completedDate: new Date().toISOString() }, "patient");
+  dispatchWindowEvent("followUpUpdated");
 };
 
-export const setConsentForms = (forms: ConsentForm[]) => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(CONSENT_FORMS_KEY, JSON.stringify(forms));
-  window.dispatchEvent(new Event("consentFormUpdated"));
-};
+// --- Consent Forms Management ----------------------------------------------
 
-export const getConsentFormsByPatientId = (patientId: string): ConsentForm[] => {
-  return getConsentForms().filter((f) => f.patientId === patientId);
-};
+export const getConsentForms = (): Promise<ConsentForm[]> => apiGet<ConsentForm[]>("/api/data/consent-forms", "admin");
 
-export const createConsentForm = (form: Omit<ConsentForm, "id">) => {
-  const forms = getConsentForms();
-  const newForm: ConsentForm = {
-    ...form,
-    id: `consent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  };
-  forms.push(newForm);
-  setConsentForms(forms);
+export const getMyConsentForms = (): Promise<ConsentForm[]> => apiGet<ConsentForm[]>("/api/data/consent-forms", "patient");
+
+export const createConsentForm = async (form: Omit<ConsentForm, "id">): Promise<ConsentForm> => {
+  const current = await getConsentForms();
+  const newForm: ConsentForm = { ...form, id: createId("consent") };
+  await apiPut("/api/data/consent-forms", [...current, newForm], "admin");
+  dispatchWindowEvent("consentFormUpdated");
   return newForm;
 };
 
-export const signConsentForm = (id: string) => {
-  const forms = getConsentForms();
-  const index = forms.findIndex((f) => f.id === id);
-  if (index !== -1) {
-    forms[index] = {
-      ...forms[index],
-      isSigned: true,
-      signatureDate: new Date().toISOString(),
-    };
-    setConsentForms(forms);
-    return forms[index];
-  }
-  return null;
+export const signMyConsentForm = async (id: string): Promise<void> => {
+  await apiPost(`/api/patient/consent-forms/${id}/sign`, {}, "patient");
+  dispatchWindowEvent("consentFormUpdated");
 };
 
-// Insurance Billing Management
-export const getInsuranceBillings = (): InsuranceBilling[] => {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(INSURANCE_BILLING_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-};
+// --- Insurance Billing Management -------------------------------------------
 
-export const setInsuranceBillings = (billings: InsuranceBilling[]) => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(INSURANCE_BILLING_KEY, JSON.stringify(billings));
-  window.dispatchEvent(new Event("insuranceBillingUpdated"));
-};
+export const getInsuranceBillings = (): Promise<InsuranceBilling[]> => apiGet<InsuranceBilling[]>("/api/data/insurance-billings", "admin");
 
-export const getInsuranceBillingsByPatientId = (patientId: string): InsuranceBilling[] => {
-  return getInsuranceBillings().filter((b) => b.patientId === patientId);
-};
+export const getMyInsuranceBillings = (): Promise<InsuranceBilling[]> => apiGet<InsuranceBilling[]>("/api/data/insurance-billings", "patient");
 
-export const createInsuranceBilling = (billing: Omit<InsuranceBilling, "id">) => {
-  const billings = getInsuranceBillings();
-  const newBilling: InsuranceBilling = {
-    ...billing,
-    id: `billing-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  };
-  billings.push(newBilling);
-  setInsuranceBillings(billings);
+export const createInsuranceBilling = async (billing: Omit<InsuranceBilling, "id">): Promise<InsuranceBilling> => {
+  const current = await getInsuranceBillings();
+  const newBilling: InsuranceBilling = { ...billing, id: createId("billing") };
+  await apiPut("/api/data/insurance-billings", [...current, newBilling], "admin");
+  dispatchWindowEvent("insuranceBillingUpdated");
   return newBilling;
 };
 
-// Medical Reports Management
-export const getMedicalReports = (): MedicalReport[] => {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(MEDICAL_REPORTS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-};
+// --- Medical Reports Management ----------------------------------------------
 
-export const setMedicalReports = (reports: MedicalReport[]) => {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(MEDICAL_REPORTS_KEY, JSON.stringify(reports));
-};
+export const getMedicalReports = (): Promise<MedicalReport[]> => apiGet<MedicalReport[]>("/api/data/medical-reports", "admin");
 
-export const getMedicalReportsByPatientId = (patientId: string): MedicalReport[] => {
-  return getMedicalReports().filter((r) => r.patientId === patientId);
-};
+export const getMyMedicalReports = (): Promise<MedicalReport[]> => apiGet<MedicalReport[]>("/api/data/medical-reports", "patient");
 
-export const createMedicalReport = (report: Omit<MedicalReport, "id">) => {
-  const reports = getMedicalReports();
-  const newReport: MedicalReport = {
-    ...report,
-    id: `report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  };
-  reports.push(newReport);
-  setMedicalReports(reports);
+export const createMedicalReport = async (report: Omit<MedicalReport, "id">): Promise<MedicalReport> => {
+  const current = await getMedicalReports();
+  const newReport: MedicalReport = { ...report, id: createId("report") };
+  await apiPut("/api/data/medical-reports", [...current, newReport], "admin");
+  dispatchWindowEvent("medicalReportUpdated");
   return newReport;
 };
+
+// --- Notifications (admin-triggered) -----------------------------------------
 
 export interface SendNotificationResult {
   success: boolean;
@@ -274,26 +243,17 @@ export const sendFollowUpEmail = async (payload: {
   description: string;
   dueDate: string;
   type: string;
-}) => {
+}): Promise<SendNotificationResult> => {
   try {
-    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.followup}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json().catch(() => null);
-    const success = response.ok && (result?.success ?? true);
-    const message = result?.message
-      || (response.ok ? "Follow-up email notification processed." : `Follow-up email request failed (${response.status} ${response.statusText}).`);
+    const result = await apiPost<any>(API_CONFIG.endpoints.followup, payload, "admin");
     return {
-      success,
-      message,
-      pdfUrl:
-        result?.pdfUrl || result?.followUpPdf?.publicUrl || result?.followUpPdf?.localUrl,
-    } as SendNotificationResult;
+      success: Boolean(result?.success),
+      message: result?.message || "Follow-up email notification processed.",
+      pdfUrl: result?.pdfUrl || result?.followUpPdf?.publicUrl || result?.followUpPdf?.localUrl,
+    };
   } catch (error) {
     console.error("Follow-up email send error:", error);
-    return { success: false, message: "Could not send follow-up email. Please check the email server." };
+    return { success: false, message: error instanceof Error ? error.message : "Could not send follow-up email." };
   }
 };
 
@@ -305,26 +265,17 @@ export const sendReportEmail = async (payload: {
   title: string;
   description?: string;
   date: string;
-}) => {
+}): Promise<SendNotificationResult> => {
   try {
-    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.report}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json().catch(() => null);
-    const success = response.ok && (result?.success ?? true);
-    const message = result?.message
-      || (response.ok ? "Medical report email notification processed." : `Medical report request failed (${response.status} ${response.statusText}).`);
+    const result = await apiPost<any>(API_CONFIG.endpoints.report, payload, "admin");
     return {
-      success,
-      message,
-      pdfUrl:
-        result?.pdfUrl || result?.reportPdf?.publicUrl || result?.reportPdf?.localUrl,
-    } as SendNotificationResult;
+      success: Boolean(result?.success),
+      message: result?.message || "Medical report email notification processed.",
+      pdfUrl: result?.pdfUrl || result?.reportPdf?.publicUrl || result?.reportPdf?.localUrl,
+    };
   } catch (error) {
     console.error("Medical report email send error:", error);
-    return { success: false, message: "Could not send medical report email. Please check the email server." };
+    return { success: false, message: error instanceof Error ? error.message : "Could not send medical report email." };
   }
 };
 
@@ -340,30 +291,22 @@ export const sendBillingEmail = async (payload: {
   status: string;
   notes?: string;
   submissionDate: string;
-}) => {
+}): Promise<SendNotificationResult> => {
   try {
-    const response = await fetch(`${API_CONFIG.baseUrl}${API_CONFIG.endpoints.billing}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json().catch(() => null);
-    const success = response.ok && (result?.success ?? true);
-    const message = result?.message
-      || (response.ok ? "Billing email notification processed." : `Billing request failed (${response.status} ${response.statusText}).`);
+    const result = await apiPost<any>(API_CONFIG.endpoints.billing, payload, "admin");
     return {
-      success,
-      message,
-      pdfUrl:
-        result?.pdfUrl || result?.billingPdf?.publicUrl || result?.billingPdf?.localUrl,
-    } as SendNotificationResult;
+      success: Boolean(result?.success),
+      message: result?.message || "Billing email notification processed.",
+      pdfUrl: result?.pdfUrl || result?.billingPdf?.publicUrl || result?.billingPdf?.localUrl,
+    };
   } catch (error) {
     console.error("Billing email send error:", error);
-    return { success: false, message: "Could not send billing email. Please check the email server." };
+    return { success: false, message: error instanceof Error ? error.message : "Could not send billing email." };
   }
 };
 
-// Patient Templates
+// --- Patient Templates (static reference data, unchanged) --------------------
+
 export const PATIENT_TEMPLATES: PatientTemplate[] = [
   {
     id: "template-diabetes",

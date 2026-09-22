@@ -1,7 +1,8 @@
 import { Star, Quote } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useScrollAnimation, useStaggeredAnimation } from "@/hooks/useScrollAnimation";
-import { getMediaItems, type AdminMediaItem } from "@/lib/admin";
+import { getMediaItems, resolveMediaUrl } from "@/lib/admin";
 import { cn } from "@/lib/utils";
 
 const testimonials = [
@@ -28,26 +29,17 @@ const testimonials = [
 const TestimonialsSection = () => {
   const { ref: headerRef, isVisible: headerVisible } = useScrollAnimation();
   const { ref: cardsRef, isVisible: cardsVisible, getDelay } = useStaggeredAnimation(testimonials.length, 150);
-  const [mediaItems, setMediaItemsState] = useState<AdminMediaItem[]>([]);
+  const queryClient = useQueryClient();
+  const { data: mediaItems = [] } = useQuery({
+    queryKey: ["publicMedia"],
+    queryFn: getMediaItems,
+  });
 
   useEffect(() => {
-    setMediaItemsState(getMediaItems());
-
-    const handleStorageChange = () => {
-      setMediaItemsState(getMediaItems());
-    };
-
-    const handleMediaUpdated = () => {
-      setMediaItemsState(getMediaItems());
-    };
-
-    window.addEventListener("storage", handleStorageChange);
-    window.addEventListener("mediaUpdated", handleMediaUpdated);
-    return () => {
-      window.removeEventListener("storage", handleStorageChange);
-      window.removeEventListener("mediaUpdated", handleMediaUpdated);
-    };
-  }, []);
+    const refresh = () => queryClient.invalidateQueries({ queryKey: ["publicMedia"] });
+    window.addEventListener("mediaUpdated", refresh);
+    return () => window.removeEventListener("mediaUpdated", refresh);
+  }, [queryClient]);
 
   return (
     <section className="py-24 lg:py-32 hero-gradient">
@@ -94,10 +86,10 @@ const TestimonialsSection = () => {
                 {mediaItems.map((item) => (
                   <div key={item.id} className="rounded-3xl overflow-hidden border border-border/50 bg-slate-950">
                     {item.type === "image" ? (
-                      <img src={item.url} alt={item.title} className="h-[240px] w-full object-cover" />
+                      <img src={resolveMediaUrl(item.url)} alt={item.title} className="h-[240px] w-full object-cover" />
                     ) : (
                       <div className="relative aspect-video bg-black">
-                        <video src={item.url} controls className="h-full w-full object-cover" />
+                        <video src={resolveMediaUrl(item.url)} controls className="h-full w-full object-cover" />
                       </div>
                     )}
                     <div className="p-4">

@@ -1,20 +1,22 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Stethoscope } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ADMIN_PASSWORD, ADMIN_USERNAME, getAdminCredentials, getClinicSettings, isAdminLoggedIn, loginAdmin } from "@/lib/admin";
+import { getClinicSettings, isAdminLoggedIn, loginAdmin } from "@/lib/admin";
 
 const AdminLoginPage = () => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
-  const savedCredentials = getAdminCredentials();
-  const isUsingDefaultCredentials =
-    savedCredentials.username === ADMIN_USERNAME && savedCredentials.password === ADMIN_PASSWORD;
-  const clinicName = getClinicSettings().clinicName;
+  const { data: clinicName = "Dr. Rana Dental Clinic" } = useQuery({
+    queryKey: ["clinicSettings", "name"],
+    queryFn: async () => (await getClinicSettings()).clinicName,
+  });
 
   useEffect(() => {
     if (isAdminLoggedIn()) {
@@ -22,17 +24,20 @@ const AdminLoginPage = () => {
     }
   }, [navigate]);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (loginAdmin(username.trim(), password.trim())) {
-      navigate("/admin/dashboard");
-      return;
+    setError("");
+    setIsSubmitting(true);
+    try {
+      const success = await loginAdmin(username.trim(), password.trim());
+      if (success) {
+        navigate("/admin/dashboard");
+        return;
+      }
+      setError("Invalid username or password.");
+    } finally {
+      setIsSubmitting(false);
     }
-    setError(
-      isUsingDefaultCredentials
-        ? "Invalid credentials. Use admin / password123."
-        : "Invalid credentials. Use the username and password saved in Settings.",
-    );
   };
 
   return (
@@ -56,6 +61,7 @@ const AdminLoginPage = () => {
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 placeholder="admin"
+                disabled={isSubmitting}
                 required
               />
             </div>
@@ -66,23 +72,22 @@ const AdminLoginPage = () => {
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                placeholder="password123"
+                placeholder="Enter your password"
+                disabled={isSubmitting}
                 required
               />
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
-            <Button type="submit" className="w-full">Sign in</Button>
+            <Button type="submit" className="w-full" disabled={isSubmitting}>
+              {isSubmitting ? "Signing in..." : "Sign in"}
+            </Button>
           </form>
 
-          {isUsingDefaultCredentials ? (
-            <div className="mt-6 text-sm text-muted-foreground">
-              Default credentials: <span className="text-foreground">admin / password123</span>
-            </div>
-          ) : (
-            <div className="mt-6 text-sm text-muted-foreground">
-              Credentials were updated in admin settings.
-            </div>
-          )}
+          <div className="mt-6 text-sm text-muted-foreground">
+            First time signing in? The default account is{" "}
+            <span className="text-foreground">admin / password123</span> -- change it right away from Settings once
+            you're in.
+          </div>
 
           <div className="mt-6 text-center text-sm">
             <Link to="/" className="text-primary hover:underline">Back to home</Link>

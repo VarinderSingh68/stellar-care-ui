@@ -12,7 +12,7 @@ const Chatbot = () => {
     {
       id: "1",
       sender: "bot",
-      text: "Hello! I'm the StellarCare Assistant. How can I help you today?",
+      text: "Hello! I'm the Dr. Rana Dental Clinic Assistant. How can I help you today?",
     },
   ]);
 

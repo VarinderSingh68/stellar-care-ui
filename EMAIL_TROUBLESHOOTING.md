@@ -38,10 +38,16 @@ After analyzing the codebase, I found several issues preventing emails from bein
 
 3. **Update `.env` file**:
    ```env
-   EMAIL_USER=ngw.designer@gmail.com
-   EMAIL_PASSWORD=xxxxxgcyscusszt  # Remove spaces from the 16-char password
+   EMAIL_USER=your-clinic-inbox@gmail.com
+   EMAIL_PASSWORD=your16charapppassword  # Remove spaces from the 16-char password
    PORT=5000
    ```
+
+   > **Security note:** this file previously showed a real, working Gmail app
+   > password as an example. That password has been removed here -- if it
+   > was ever committed to a public or shared repository, treat it as
+   > compromised and revoke/regenerate it at
+   > https://myaccount.google.com/apppasswords immediately.
 
 ### Step 2: Test Email Connection
 
@@ -54,8 +60,8 @@ const nodemailer = require('nodemailer');
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'ngw.designer@gmail.com',
-    pass: 'xvqehcgyscusszt'  // Your password without spaces
+    user: 'your-clinic-inbox@gmail.com',
+    pass: 'your16charapppassword'  // Your password without spaces
   }
 });
 
