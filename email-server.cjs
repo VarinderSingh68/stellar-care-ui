@@ -720,7 +720,7 @@ app.post('/api/send-prescription', requireAdmin, async (req, res) => {
       to: trimmedEmail,
       subject: `${clinicInfo.clinicName} - Your Prescription PDF`,
       html: patientHtml,
-      attachments: [{ filename: `prescription-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+      attachments: [{ filename: 'prescription.pdf', content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
     if (ADMIN_NOTIFICATION_EMAIL && emailResult.sent) {
@@ -738,7 +738,7 @@ app.post('/api/send-prescription', requireAdmin, async (req, res) => {
     res.json({
       success: emailResult.sent,
       message: emailResult.sent
-        ? 'Prescription email sent successfully. PDF attached.'
+        ? 'Prescription email sent successfully.'
         : `Prescription PDF generated, but the email failed to send: ${emailResult.error}`,
       prescriptionPdf: { filename, localUrl, publicUrl },
       notifications: { email: emailResult, whatsapp },
@@ -781,7 +781,7 @@ app.post('/api/send-followup', requireAdmin, async (req, res) => {
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #2563eb;">Follow-up Reminder</h2>
         <p>Dear ${patientName},</p>
-        <p>Your care team has created a follow-up task for you. Please review the attached PDF for details.</p>
+        <p>Your care team has created a follow-up task for you. Please find the details attached.</p>
         <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
           <p><strong>Task:</strong> ${pdf.sanitizeText(title)}</p>
           <p><strong>Type:</strong> ${pdf.sanitizeText(type)}</p>
@@ -794,12 +794,13 @@ app.post('/api/send-followup', requireAdmin, async (req, res) => {
       to: trimmedEmail,
       subject: `${clinicInfo.clinicName} - Follow-up Reminder`,
       html: patientHtml,
-      attachments: [{ filename: `followup-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+      attachments: [{ filename: 'follow-up.pdf', content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
     res.json({
       success: emailResult.sent,
-      message: emailResult.sent ? 'Follow-up email sent with attached PDF.' : `Follow-up email failed: ${emailResult.error}`,
+      message: emailResult.sent ? 'Follow-up email sent successfully.' : `Follow-up email failed: ${emailResult.error}`,
+      notifications: { email: emailResult },
     });
   } catch (error) {
     console.error('❌ Follow-up email error:', error?.message || error);
@@ -825,7 +826,7 @@ app.post('/api/send-report', requireAdmin, async (req, res) => {
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #2563eb;">Medical Report</h2>
         <p>Dear ${patientName},</p>
-        <p>Your medical report is ready. Please review the attached PDF for details.</p>
+        <p>Your medical report is ready. Please find it attached.</p>
         <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
           <p><strong>Report Type:</strong> ${pdf.sanitizeText(reportType)}</p>
           <p><strong>Title:</strong> ${pdf.sanitizeText(title)}</p>
@@ -838,12 +839,13 @@ app.post('/api/send-report', requireAdmin, async (req, res) => {
       to: trimmedEmail,
       subject: `${clinicInfo.clinicName} - Medical Report`,
       html: patientHtml,
-      attachments: [{ filename: `report-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+      attachments: [{ filename: 'medical-report.pdf', content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
     res.json({
       success: emailResult.sent,
-      message: emailResult.sent ? 'Medical report email sent with attached PDF.' : `Medical report email failed: ${emailResult.error}`,
+      message: emailResult.sent ? 'Medical report email sent successfully.' : `Medical report email failed: ${emailResult.error}`,
+      notifications: { email: emailResult },
     });
   } catch (error) {
     console.error('❌ Medical report email error:', error?.message || error);
@@ -869,7 +871,7 @@ app.post('/api/send-billing', requireAdmin, async (req, res) => {
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #2563eb;">Billing Summary</h2>
         <p>Dear ${patientName},</p>
-        <p>Your billing summary and insurance claim details are attached as a PDF.</p>
+        <p>Your billing summary and insurance claim details are ready. Please find it attached.</p>
         <div style="background-color: #f0f9ff; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #2563eb;">
           <p><strong>Claim ID:</strong> ${pdf.sanitizeText(claimId)}</p>
           <p><strong>Insurance Provider:</strong> ${pdf.sanitizeText(insuranceProvider)}</p>
@@ -883,12 +885,13 @@ app.post('/api/send-billing', requireAdmin, async (req, res) => {
       to: trimmedEmail,
       subject: `${clinicInfo.clinicName} - Billing Summary`,
       html: patientHtml,
-      attachments: [{ filename: `billing-${pdf.sanitizeText(patientName).replace(/\s+/g, '-').toLowerCase() || 'patient'}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+      attachments: [{ filename: 'billing-summary.pdf', content: pdfBuffer, contentType: 'application/pdf' }],
     });
 
     res.json({
       success: emailResult.sent,
-      message: emailResult.sent ? 'Billing email sent with attached PDF.' : `Billing email failed: ${emailResult.error}`,
+      message: emailResult.sent ? 'Billing email sent successfully.' : `Billing email failed: ${emailResult.error}`,
+      notifications: { email: emailResult },
     });
   } catch (error) {
     console.error('❌ Billing email error:', error?.message || error);
