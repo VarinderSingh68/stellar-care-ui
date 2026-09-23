@@ -910,7 +910,7 @@ app.use((req, res) => {
 
 const PORT = Number(process.env.PORT) || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 Dr. Rana Dental Clinic API running on http://0.0.0.0:${PORT}`);
+  console.log(`\n🚀 Dr. Rana Dental Clinic API running on http://localhost:${PORT}`);
   console.log(`   Data directory: ${DATA_DIR}`);
   console.log(`   Email configured: ${mailer.configured ? 'yes' : 'no'}`);
   console.log(`   WATI configured: ${wati.configured ? 'yes' : 'no'}\n`);

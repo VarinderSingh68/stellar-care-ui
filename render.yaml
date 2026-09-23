@@ -2,25 +2,22 @@ services:
   - type: web
     name: dr-rana-dental-api
     env: node
-    plan: free
+    # NOTE: persistent Disks (below) are not available on Render's free
+    # plan -- this must be a paid instance type for patient/appointment
+    # data to survive a redeploy or restart.
+    plan: starter
     buildCommand: npm install --include=dev
     startCommand: node email-server.cjs
-    # NOTE: Render's free web services have an EPHEMERAL filesystem -- every
-    # redeploy/restart wipes anything written to disk, including the JSON
-    # data store (patients, appointments, prescriptions, uploaded media,
-    # etc.) and the generated session secret. To keep data across deploys,
-    # attach a Render persistent Disk to this service and point DATA_DIR at
-    # its mount path (uncomment the "disk" block below and add DATA_DIR).
-    # disk:
-    #   name: clinic-data
-    #   mountPath: /var/data
+    disk:
+      name: clinic-data
+      mountPath: /var/data
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
-      # - key: DATA_DIR
-      #   value: /var/data
+      - key: DATA_DIR
+        value: /var/data
       - key: SESSION_SECRET
         generateValue: true
       - key: EMAIL_USER

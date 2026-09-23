@@ -11,8 +11,21 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist_patched
+dist_resend
 runtime-prescriptions
 *.local
+*.tgz
+*.tmp
+*.timestamp-*.mjs
+
+# Ad-hoc tool/dependency scratch dirs from prior local troubleshooting --
+# never meant to be committed (they vendor node_modules-sized content).
+.dependency-repair/
+.swc-repair/
+.vite-repair/
+.tools/
+.npm-cache/
 
 # Backend JSON data store + uploaded media (server/store.cjs) -- this is
 # runtime data, not source. On Render, point DATA_DIR at a persistent Disk
