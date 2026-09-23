@@ -612,7 +612,7 @@ app.post('/api/send-booking', async (req, res) => {
         <p>Dear ${patientName},</p>
         <p>Thank you for booking an appointment with ${clinicInfo.clinicName}. Your appointment details are:</p>
         <div style="background-color: #f0f9ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2563eb;">
-          <p><strong>Date:</strong> ${appointmentDate}</p>
+          <p><strong>Date:</strong> ${pdf.formatDateText(appointmentDate)}</p>
           <p><strong>Time:</strong> ${appointmentTime}</p>
           <p><strong>Reason:</strong> ${reason}</p>
         </div>
@@ -628,7 +628,7 @@ app.post('/api/send-booking', async (req, res) => {
           <p><strong>Email:</strong> ${patientEmail}</p>
           <p><strong>Phone:</strong> ${patientPhone}</p>
           <hr style="margin: 15px 0; border: none; border-top: 1px solid #ddd;">
-          <p><strong>Appointment Date:</strong> ${appointmentDate}</p>
+          <p><strong>Appointment Date:</strong> ${pdf.formatDateText(appointmentDate)}</p>
           <p><strong>Appointment Time:</strong> ${appointmentTime}</p>
           <p><strong>Reason for Visit:</strong> ${reason}</p>
         </div>
@@ -648,7 +648,7 @@ app.post('/api/send-booking', async (req, res) => {
     const whatsapp = await wati.sendBookingWhatsApp({
       patientName,
       patientPhone,
-      appointmentDate,
+      appointmentDate: pdf.formatDateText(appointmentDate),
       appointmentTime,
       clinicPhone: clinicInfo.clinicPhone,
     });

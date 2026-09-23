@@ -1,5 +1,3 @@
-"use client";
-
 import { useState } from "react";
 import ChatbotToggleButton from "./ChatbotToggleButton";
 import ChatbotWindow from "./ChatbotWindow";

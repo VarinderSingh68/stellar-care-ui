@@ -215,7 +215,18 @@ function generateNotificationPdfBuffer({
     pdfText(sectionTitle, 48, 652, 'F2', 13, [0.16, 0.22, 0.35]),
   ];
 
-  sectionLines.forEach((line, index) => {
+  // Cap how many lines get rendered -- without this, a sufficiently long
+  // description/notes field (nothing on the frontend limits their length)
+  // would push text below the bottom of the content box (y=110) and off
+  // the page entirely, since this hand-rolled layout has no pagination.
+  // Mirrors the cap already applied to the prescription's Rx lines above.
+  const MAX_SECTION_LINES = 25;
+  const visibleLines = sectionLines.slice(0, MAX_SECTION_LINES);
+  if (sectionLines.length > MAX_SECTION_LINES) {
+    visibleLines[MAX_SECTION_LINES - 1] = '... (truncated, see admin dashboard for full details)';
+  }
+
+  visibleLines.forEach((line, index) => {
     const y = 632 - index * 18;
     contentLines.push(pdfText(line, 48, y, 'F1', 10, [0.1, 0.1, 0.1]));
   });

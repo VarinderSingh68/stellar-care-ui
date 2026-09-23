@@ -197,9 +197,29 @@ export const uploadMediaFile = async (file: File): Promise<{ url: string }> => {
 
 // --- Bookings / appointments -------------------------------------------
 
+// Raw shape of a booking record as email-server.cjs's JSON store returns it
+// (see the `appointment` object built in its /api/send-booking and
+// /api/appointments handlers) -- looser than AdminAppointment since older
+// records on disk may be missing fields that newer code always sets.
+interface RawBooking {
+  id: string;
+  patientId?: string;
+  patientName: string;
+  patientEmail?: string;
+  patientPhone?: string;
+  appointmentDate: string;
+  appointmentTime: string;
+  reason: string;
+  notes?: string;
+  bookingDate?: string;
+  createdAt?: string;
+  status?: AppointmentStatus;
+  durationMinutes?: number;
+}
+
 export const getBookings = async (): Promise<AdminAppointment[]> => {
   try {
-    const bookings = await apiGet<any[]>("/api/bookings", "admin");
+    const bookings = await apiGet<RawBooking[]>("/api/bookings", "admin");
     return bookings.map((b) => ({
       id: b.id,
       patientId: b.patientId,

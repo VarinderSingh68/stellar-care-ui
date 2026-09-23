@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
 import { saveBookingAndNotify, type Booking } from "@/lib/booking";
-import { cn } from "@/lib/utils";
+import { cn, toLocalDateInputValue } from "@/lib/utils";
 
 const timeSlots = [
   "9:00 AM", "9:30 AM", "10:00 AM", "10:30 AM",
@@ -62,12 +62,16 @@ const BookingSection = () => {
         patientEmail: formData.patientEmail.trim(),
         patientPhone: formData.patientPhone.trim(),
         reason: formData.reason.trim(),
-        appointmentDate: date.toLocaleDateString("en-US", {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        }),
+        // Stored as YYYY-MM-DD, matching every other appointmentDate/dueDate/
+        // visitDate value in the app (admin-created appointments already use
+        // this shape, from a native <input type="date">). A human-readable
+        // locale string here used to make this specific field the odd one
+        // out -- it could never match the admin dashboard's exact-string
+        // "today" / calendar-date filters, so appointments booked through
+        // this public form silently never showed up there. The nice
+        // "Monday, October 1" wording is still shown to the patient above
+        // and formatted for them server-side in the confirmation email.
+        appointmentDate: toLocalDateInputValue(date),
         appointmentTime: selectedTime,
       };
 

@@ -1,6 +1,9 @@
 import { AdminAppointment, AdminPatient } from "@/lib/admin";
+import { toLocalDateInputValue } from "@/lib/utils";
 
-export const getTodayInputValue = () => new Date().toISOString().slice(0, 10);
+export { toLocalDateInputValue };
+
+export const getTodayInputValue = () => toLocalDateInputValue(new Date());
 
 export const createId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 

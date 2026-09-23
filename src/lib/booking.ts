@@ -26,7 +26,6 @@ export const saveBookingAndNotify = async (booking: Omit<Booking, 'id' | 'bookin
   }
 
   const endpointUrl = `${baseUrl}${API_CONFIG.endpoints.booking}`;
-  console.log("Booking request URL:", endpointUrl);
 
   const controller = new AbortController();
   const timeoutMs = 60000;

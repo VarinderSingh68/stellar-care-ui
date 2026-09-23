@@ -232,7 +232,17 @@ export const createMedicalReport = async (report: Omit<MedicalReport, "id">): Pr
 export interface SendNotificationResult {
   success: boolean;
   message: string;
-  pdfUrl?: string;
+}
+
+// The backend attaches the generated PDF directly to these emails (see
+// email-server.cjs) rather than saving it to disk and returning a link, so
+// the response never carries a PDF URL -- unlike sendPrescriptionEmail in
+// lib/admin.ts, which still does (prescriptions are also saved to disk for
+// the WhatsApp-link flow). Keep this type minimal to match what the server
+// actually sends instead of implying a field that's never populated.
+interface NotificationApiResponse {
+  success?: boolean;
+  message?: string;
 }
 
 export const sendFollowUpEmail = async (payload: {
@@ -245,11 +255,10 @@ export const sendFollowUpEmail = async (payload: {
   type: string;
 }): Promise<SendNotificationResult> => {
   try {
-    const result = await apiPost<any>(API_CONFIG.endpoints.followup, payload, "admin");
+    const result = await apiPost<NotificationApiResponse>(API_CONFIG.endpoints.followup, payload, "admin");
     return {
       success: Boolean(result?.success),
       message: result?.message || "Follow-up email notification processed.",
-      pdfUrl: result?.pdfUrl || result?.followUpPdf?.publicUrl || result?.followUpPdf?.localUrl,
     };
   } catch (error) {
     console.error("Follow-up email send error:", error);
@@ -267,11 +276,10 @@ export const sendReportEmail = async (payload: {
   date: string;
 }): Promise<SendNotificationResult> => {
   try {
-    const result = await apiPost<any>(API_CONFIG.endpoints.report, payload, "admin");
+    const result = await apiPost<NotificationApiResponse>(API_CONFIG.endpoints.report, payload, "admin");
     return {
       success: Boolean(result?.success),
       message: result?.message || "Medical report email notification processed.",
-      pdfUrl: result?.pdfUrl || result?.reportPdf?.publicUrl || result?.reportPdf?.localUrl,
     };
   } catch (error) {
     console.error("Medical report email send error:", error);
@@ -293,11 +301,10 @@ export const sendBillingEmail = async (payload: {
   submissionDate: string;
 }): Promise<SendNotificationResult> => {
   try {
-    const result = await apiPost<any>(API_CONFIG.endpoints.billing, payload, "admin");
+    const result = await apiPost<NotificationApiResponse>(API_CONFIG.endpoints.billing, payload, "admin");
     return {
       success: Boolean(result?.success),
       message: result?.message || "Billing email notification processed.",
-      pdfUrl: result?.pdfUrl || result?.billingPdf?.publicUrl || result?.billingPdf?.localUrl,
     };
   } catch (error) {
     console.error("Billing email send error:", error);

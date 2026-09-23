@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
@@ -16,8 +16,32 @@ import AdminDashboard from "./pages/AdminDashboard";
 import PatientPortalLoginPage from "./pages/PatientPortalLoginPage";
 import PatientPortalDashboard from "./pages/PatientPortalDashboard";
 import Chatbot from "@/components/Chatbot";
+import { clearAdminToken, clearPatientToken, isAuthError } from "@/lib/api";
 
-const queryClient = new QueryClient();
+// Admin tokens expire after 12h, patient tokens after 30d (see
+// server/auth.cjs), and either can also go invalid if the admin logs out in
+// another tab, clears storage, etc. Without this, a query/mutation that hits
+// a stale token would 401, react-query would retry it a few times, and the
+// page would just sit there silently broken -- no "please log in again",
+// nothing -- since isAdminLoggedIn()/isPatientAuthenticated() only check
+// whether *a* token is present, not whether it still works. This bounces
+// back to the matching login screen as soon as any request comes back 401.
+function handleSessionExpired(error: unknown) {
+  if (!isAuthError(error) || typeof window === "undefined") return;
+  const { pathname } = window.location;
+  if (pathname.startsWith("/admin") && pathname !== "/admin") {
+    clearAdminToken();
+    window.location.href = "/admin";
+  } else if (pathname.startsWith("/patient-portal") && pathname !== "/patient-portal") {
+    clearPatientToken();
+    window.location.href = "/patient-portal";
+  }
+}
+
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: handleSessionExpired }),
+  mutationCache: new MutationCache({ onError: handleSessionExpired }),
+});
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
