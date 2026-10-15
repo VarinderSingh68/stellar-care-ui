@@ -1,274 +1,112 @@
-# Stellar Care UI - Healthcare Management Platform
+# Dr. Rana Dental Clinic
 
-A comprehensive healthcare management platform built with React and TypeScript, designed for medical professionals and patients to streamline healthcare delivery.
+Website, appointment booking, admin console and patient portal for Dr. Rana Dental Clinic (Kharar, Punjab).
 
-## 🏥 Features
+- **Frontend**: React 18 + TypeScript + Vite, Tailwind CSS, shadcn/ui
+- **Backend**: Node.js + Express API with JSON-file storage, signed session tokens, email (Resend or Gmail SMTP), optional WhatsApp (WATI), and PDF generation for prescriptions, follow-ups, reports and billing
 
-### For Patients
-- **Patient Portal**: Create account and access personal health dashboard
-- **Follow-up Reminders**: View and track assigned health tasks
-- **Consent Forms**: Review and digitally sign treatment consent forms
-- **Medical Records**: Access lab reports and medical documents
-- **Insurance Tracking**: Monitor health insurance claims status
+## Project structure
 
-### For Healthcare Providers (Admin)
-- **Patient Management**: Maintain comprehensive patient records with medical history
-- **Prescription Management**: Create and send prescriptions via email/WhatsApp
-- **Automated Follow-ups**: Create medication reminders, test schedules, exercise routines
-- **Digital Consent Forms**: Generate and manage patient consent forms
-- **Insurance Integration**: Submit and track insurance claims directly
-- **Care Templates**: Pre-configured care plans for common conditions (diabetes, pregnancy, cardiology)
-- **Medical Reports**: Manage and share patient medical reports
-- **Appointment Booking**: Integrated appointment scheduling system
+```
+.
+├── frontend/              React website + admin console + patient portal
+│   ├── src/               pages, components, lib (API client in src/lib/api.ts)
+│   ├── public/
+│   ├── index.html
+│   ├── vite.config.ts
+│   └── package.json
+├── backend/               Express API
+│   ├── server.cjs         entry point: every route lives here
+│   ├── lib/               auth, storage, mailer, email templates, PDF, WATI
+│   ├── scripts/           smoke-test.mjs (npm test)
+│   ├── data/              runtime data, created on first start (gitignored)
+│   ├── WATI_SETUP.md      WhatsApp setup guide
+│   └── package.json
+├── env/                   environment files for local development
+│   ├── backend.env.example
+│   └── frontend.env.example
+├── package.json           runs frontend + backend together
+├── render.yaml            Render deployment (API + static site)
+└── start.cmd              Windows double-click launcher
+```
 
-## ✨ New Features (v1.0)
+`frontend/` and `backend/` are independent npm packages, each with its own `package.json` and `node_modules`. Each can be built and deployed by itself.
 
-### 1. Patient Portal & Dashboard
-- Secure patient accounts with registration and login
-- Personal health dashboard with key metrics
-- Follow-up task management with status tracking
-- Digital consent form signing
-- Medical report access
-- Insurance claim visibility
+## Getting started
 
-**Access**: Navigate to Patient Portal link in navbar or visit `/patient-portal`
+Requires Node.js 20 or newer.
 
-### 2. Automated Follow-ups
-- Create medication reminders
-- Schedule medical tests
-- Track exercise and diet recommendations
-- Set appointment follow-ups
-- Monitor completion status
-
-### 3. Digital Consent Forms
-- Create treatment, surgery, and procedure consent forms
-- Digital signature with timestamp
-- Patient-side signing interface
-- Track signed vs. unsigned forms
-
-### 4. Insurance Billing Integration
-- Direct insurance claim submission
-- Track claim status (submitted, processing, approved, rejected, paid)
-- Link multiple insurance providers
-- Monitor claim processing
-
-### 5. Care Templates
-Pre-configured care plans for common conditions:
-- **Diabetes Care**: Blood monitoring, medication, HbA1c tests, exercise, diet
-- **Pregnancy Tracking**: Prenatal vitamins, ultrasounds, blood pressure checks
-- **Cardiology**: Blood pressure monitoring, cardiac medication, ECG tests
-
-### 6. Medical Reports Management
-- Upload and manage lab reports
-- Track report dates and types
-- Patient access through secure portal
-- Searchable report library
-
-## 🚀 Quick Start
-
-### Installation
 ```bash
-# Install dependencies
-npm install
+# 1. Install dependencies for root, backend and frontend
+npm run setup
 
-# Start development server
-npm run dev
+# 2. Create your local backend config and fill it in (email, WhatsApp, etc.)
+cp env/backend.env.example env/backend.env
 
-# Build for production
-npm run build
-```
-
-### Access the Application
-
-**Admin Dashboard**:
-- Navigate to `/admin`
-- Default credentials: `admin` / `password123`
-
-**Patient Portal**:
-- Click "Patient Portal" in navbar
-- Register for new account or use demo: `patient@demo.com` / `demo123`
-
-## 📁 Project Structure
-
-```
-src/
-├── pages/
-│   ├── Index.tsx
-│   ├── BookingPage.tsx
-│   ├── AdminDashboard.tsx
-│   ├── PatientPortalLoginPage.tsx (NEW)
-│   ├── PatientPortalDashboard.tsx (NEW)
-│   └── ...
-├── components/
-│   ├── Navbar.tsx (updated)
-│   ├── BookingSection.tsx
-│   ├── AdminPatientManagement.tsx (NEW)
-│   └── ...
-└── lib/
-    ├── admin.ts
-    ├── booking.ts
-    ├── patient-portal.ts (NEW)
-    └── utils.ts
-```
-
-## 📚 Documentation
-
-- [Features Guide](FEATURES_GUIDE.md) - Comprehensive feature documentation
-- [Quick Start Guide](QUICK_START.md) - Step-by-step usage instructions
-- [Setup Guide](SETUP.md) - Development environment setup
-- [Email Troubleshooting Guide](EMAIL_TROUBLESHOOTING.md) - **IMPORTANT**: Fix email sending issues
-- [Email Setup Guide](EMAIL_SETUP.md) - Configure email notifications
-- [WATI Setup Guide](WATI_SETUP.md) - Configure WhatsApp notifications
-
-## 🔐 Demo Credentials
-
-### Admin Account
-- **Email**: admin
-- **Password**: password123
-- **URL**: `/admin`
-
-### Demo Patient Account
-- **Email**: patient@demo.com
-- **Password**: demo123
-- **URL**: `/patient-portal`
-
-## 📧 Email & Notifications
-
-This application includes a complete email notification system:
-
-### Quick Email Setup
-```bash
-# 1. Test your email configuration first
-node test-email-connection.cjs
-
-# 2. Start the email server
-node email-server.cjs
-
-# 3. Start the frontend (in another terminal)
+# 3. Start the backend and frontend together
 npm run dev
 ```
 
-### Available Email Endpoints
-- **Booking Confirmations**: `/api/send-booking`
-- **Prescriptions**: `/api/send-prescription`
-- **Follow-up Reminders**: `/api/send-followup`
-- **Medical Reports**: `/api/send-report`
-- **Billing Summaries**: `/api/send-billing`
+On Windows you can also just double-click **`start.cmd`**. It installs dependencies on first run, then starts both servers.
 
-### WhatsApp Integration (WATI)
-The system also supports WhatsApp notifications via WATI API. See [WATI_SETUP.md](WATI_SETUP.md) for configuration.
+| What | URL |
+|------|-----|
+| Website | http://localhost:8080 |
+| Admin console | http://localhost:8080/admin |
+| Patient portal | http://localhost:8080/patient-portal |
+| API (status page) | http://localhost:5000 |
 
-**⚠️ Important**: If emails are not working, check the [Email Troubleshooting Guide](EMAIL_TROUBLESHOOTING.md) first.
+### Default logins
 
-## 🛠️ Tech Stack
+These are created automatically the first time the backend starts with an empty data folder:
 
-- **Frontend**: React 18 with TypeScript
-- **Styling**: Tailwind CSS
-- **UI Components**: shadcn/ui
-- **State Management**: React Hooks
-- **Routing**: React Router v6
-- **Data Storage**: Browser localStorage
-- **Build Tool**: Vite
+| Account | Username / email | Password |
+|---------|------------------|----------|
+| Admin | `admin` | `password123` (change it in Admin → Settings) |
+| Demo patient | `patient@demo.com` | `demo123` |
 
-## 📋 Available Scripts
+## Environment variables
 
-```bash
-# Development
-npm run dev           # Start dev server
-npm run dev:fast      # Fast reload without tag processing
-npm run dev:server    # Run with Node server
+All local env files live in `env/`. Only the `*.example` templates are committed. The real `env/backend.env` and `env/frontend.env` are gitignored.
 
-# Production
-npm run build         # Build for production
-npm run build:fast    # Faster build without sourcemaps
-npm run preview       # Preview production build
+| File | Used by | Notes |
+|------|---------|-------|
+| `env/backend.env` | `backend/server.cjs` | Email, WhatsApp, session secret, data folder. Every variable is documented in `env/backend.env.example`. |
+| `env/frontend.env` | `frontend/vite.config.ts` | Optional. `VITE_API_URL` defaults to `http://localhost:5000` in development. |
 
-# Utilities
-npm run lint          # Run ESLint
-npm test              # Run tests
-npm test:watch       # Run tests in watch mode
-npm run cache:clean  # Clear Vite and node_modules cache
-```
+The backend runs without email or WhatsApp configured. Those features report "not configured" instead of crashing.
 
-## 📊 Data Storage
+**Email**: set `RESEND_API_KEY` + `RESEND_FROM_EMAIL` (recommended; needs a domain verified in Resend). Otherwise the fallback is `EMAIL_USER` + `EMAIL_PASSWORD` (a Gmail App Password), which is fine for testing but unreliable for real patient inboxes.
 
-All data is stored in browser localStorage for demo purposes:
-- Patient accounts
-- Patient medical records
-- Follow-up tasks
-- Consent forms
-- Insurance billing records
-- Medical reports
+**WhatsApp**: see [backend/WATI_SETUP.md](backend/WATI_SETUP.md).
 
-**⚠️ Note**: For production, replace localStorage with a proper backend database.
+## Scripts
 
-## 🔄 Workflow Examples
+From the project root:
 
-### Scenario 1: Create Care Plan for Diabetic Patient
-1. Admin: Admin Dashboard → Care Management
-2. Select patient
-3. Apply "Diabetes Care Template"
-4. ✅ Patient automatically receives follow-ups and consent forms
+| Command | What it does |
+|---------|--------------|
+| `npm run setup` | Install dependencies in root, `backend/` and `frontend/` |
+| `npm run dev` | Start backend (auto-restarts on change) and frontend dev server together |
+| `npm run build` | Production build of the frontend into `frontend/dist` |
+| `npm start` | Start the backend in production mode |
+| `npm test` | Backend API smoke test + frontend unit tests |
+| `npm run lint` | Lint the frontend |
 
-### Scenario 2: Patient Signs Consent Form
-1. Patient: Login to portal
-2. Go to "Consent Forms" tab
-3. Review form content
-4. Click "Sign Consent"
-5. ✅ Form marked as signed with timestamp
+Inside `backend/`: `npm start`, `npm run dev`, `npm test`.
+Inside `frontend/`: `npm run dev`, `npm run build`, `npm run preview`, `npm test`, `npm run lint`.
 
-### Scenario 3: Submit Insurance Claim
-1. Admin: Care Management → Billing tab
-2. Enter claim details and amount
-3. Click "Submit Billing"
-4. Patient: Can view claim status in portal
+`npm test` in `backend/` boots a separate copy of the API on a free port with a temporary data folder and email/WhatsApp turned off. It then checks every route. It never touches `backend/data` and never sends real messages.
 
-## 🐛 Known Limitations
+## Data storage
 
-- Data persists only in browser (localStorage)
-- Email notifications require separate email server (see [Email Troubleshooting Guide](EMAIL_TROUBLESHOOTING.md))
-- No actual insurance API integration (demo forms)
-- No file upload for medical reports (URL-based only)
-- No real user authentication backend
+The backend stores everything (bookings, patients, prescriptions, settings, uploaded media, generated PDFs) as JSON files and uploads under `backend/data/`. Set `DATA_DIR` to put it somewhere else. Back this folder up: it is the clinic's only copy of the data.
 
-## 🚀 Future Enhancements
+## Deployment (Render)
 
-- Backend database integration (MongoDB, PostgreSQL)
-- Real email/SMS notifications
-- Video consultation features
-- Mobile app version
-- Advanced analytics and reporting
-- AI-powered health recommendations
-- Multi-language support
-- Real insurance provider integration
-- Payment gateway integration
+`render.yaml` defines two services:
 
-## 🤝 Contributing
+- **`dr-rana-dental-api`**: web service with `rootDir: backend`, runs `node server.cjs`. It stores data on a persistent disk mounted at `/var/data` (`DATA_DIR`). Persistent disks need a paid instance type. On the free plan, all data is wiped on every deploy or restart.
+- **`dr-rana-dental-ui`**: static site with `rootDir: frontend`, built with `npm run build` and published from `frontend/dist`. `VITE_API_URL` points it at the API.
 
-This is a demo healthcare platform. For production use, ensure:
-- HIPAA compliance
-- End-to-end encryption
-- Secure authentication (OAuth, JWT)
-- Data backup and recovery
-- GDPR compliance
-- Audit logging
-- Regular security audits
-
-## 📄 License
-
-This project is provided as-is for demonstration purposes.
-
-## 📞 Support
-
-For issues or questions:
-1. Check the [Features Guide](FEATURES_GUIDE.md)
-2. Review [Quick Start](QUICK_START.md)
-3. Check browser console for errors (F12)
-4. Clear localStorage if data issues: `localStorage.clear()`
-
----
-
-**Last Updated**: May 14, 2026  
-**Version**: 1.0  
-**Status**: Production Demo ✅
-
+Render only makes each service's `rootDir` available, so `env/` is **not** deployed. Set secrets (email, WATI, etc.) in each service's **Environment** settings on Render.

@@ -1,45 +1,39 @@
-# Logs
+# Dependencies & build output (any folder)
+node_modules
+dist
+dist-ssr
+*.local
+
+# Secrets -- real env files live in env/ (only the *.example templates are
+# committed). Also catch a stray .env anywhere.
+env/*.env
+!env/*.env.example
+.env
+.env.*
+
+# Backend runtime data: JSON data store, uploaded media and generated PDFs
+# (backend/lib/store.cjs). This is data, not source. On Render, DATA_DIR
+# points at a persistent Disk instead (see render.yaml).
+backend/data/
+backend/data_test/
+backend/uploads/
+
+# Logs & scratch files
 logs
 *.log
-.env
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
-dist_patched
-dist_resend
-runtime-prescriptions
-*.local
 *.tgz
 *.tmp
 *.timestamp-*.mjs
 
-# Ad-hoc tool/dependency scratch dirs from prior local troubleshooting --
-# never meant to be committed (they vendor node_modules-sized content).
-.dependency-repair/
-.swc-repair/
-.vite-repair/
-.tools/
-.npm-cache/
-
-# Backend JSON data store + uploaded media (server/store.cjs) -- this is
-# runtime data, not source. On Render, point DATA_DIR at a persistent Disk
-# instead of relying on this being committed. NOTE: the root-level
-# bookings.json is intentionally NOT ignored -- it's the legacy seed file
-# that email-server.cjs migrates into data/bookings.json on first boot.
-/data/
-/data_test/
-/uploads/
-
-# Editor directories and files
+# Editor / tool state
 .vscode/*
 !.vscode/extensions.json
 .idea
+.refact/
 .DS_Store
 *.suo
 *.ntvs*

@@ -1,13 +1,16 @@
 services:
   - type: web
     name: dr-rana-dental-api
-    env: node
+    runtime: node
     # NOTE: persistent Disks (below) are not available on Render's free
     # plan -- this must be a paid instance type for patient/appointment
     # data to survive a redeploy or restart.
     plan: starter
-    buildCommand: npm install --include=dev
-    startCommand: node email-server.cjs
+    # Commands run from rootDir, and files outside it (e.g. ../env) are not
+    # available on Render -- env vars come from envVars below / the dashboard.
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.cjs
     disk:
       name: clinic-data
       mountPath: /var/data
@@ -20,6 +23,10 @@ services:
         value: /var/data
       - key: SESSION_SECRET
         generateValue: true
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
       - key: EMAIL_USER
         sync: false
       - key: EMAIL_PASSWORD
@@ -33,7 +40,9 @@ services:
 
   - type: static
     name: dr-rana-dental-ui
+    rootDir: frontend
     buildCommand: npm install --include=dev && npm run build
+    # Relative to rootDir, i.e. frontend/dist.
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL

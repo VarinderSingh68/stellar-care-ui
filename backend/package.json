@@ -1,0 +1,21 @@
+{
+  "name": "dr-rana-dental-backend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Dr. Rana Dental Clinic API (Express + JSON file storage)",
+  "main": "server.cjs",
+  "scripts": {
+    "start": "node server.cjs",
+    "dev": "node --watch server.cjs",
+    "test": "node scripts/smoke-test.mjs"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "nodemailer": "^10.0.10"
+  }
+}
