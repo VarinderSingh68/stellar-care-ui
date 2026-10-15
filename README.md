@@ -76,7 +76,7 @@ All local env files live in `env/`. Only the `*.example` templates are committed
 
 The backend runs without email or WhatsApp configured. Those features report "not configured" instead of crashing.
 
-**Email**: set `RESEND_API_KEY` + `RESEND_FROM_EMAIL` (recommended; needs a domain verified in Resend). Otherwise the fallback is `EMAIL_USER` + `EMAIL_PASSWORD` (a Gmail App Password), which is fine for testing but unreliable for real patient inboxes.
+**Email**: set `RESEND_API_KEY` + `RESEND_FROM_EMAIL` (recommended; needs a domain verified in Resend). Resend is sent over HTTPS, so it works on any Render plan. Otherwise the fallback is `EMAIL_USER` + `EMAIL_PASSWORD` (a Gmail App Password) over SMTP. Gmail is fine locally, but it **cannot connect from Render's free plan**, which blocks outbound SMTP ports. In the log that shows up as `Email transport verification failed: connect ENETUNREACH …`. It's also unreliable for real patient inboxes.
 
 **WhatsApp**: see [backend/WATI_SETUP.md](backend/WATI_SETUP.md).
 
@@ -96,7 +96,7 @@ From the project root:
 Inside `backend/`: `npm start`, `npm run dev`, `npm test`.
 Inside `frontend/`: `npm run dev`, `npm run build`, `npm run preview`, `npm test`, `npm run lint`.
 
-`npm test` in `backend/` boots a separate copy of the API on a free port with a temporary data folder and email/WhatsApp turned off. It then checks every route. It never touches `backend/data` and never sends real messages.
+`npm test` in `backend/` runs two tests. The first boots a separate copy of the API on a free port with a temporary data folder and email/WhatsApp turned off. It then checks every route. The second checks the email code (Resend requests, error handling, startup log messages) with the network stubbed out. Neither touches `backend/data` or sends real messages.
 
 ## Data storage
 

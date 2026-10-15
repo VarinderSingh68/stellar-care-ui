@@ -10,7 +10,7 @@
 //     and visible to every visitor, not just the admin's own browser.
 //   - Admin and patient-portal authentication (hashed passwords, signed
 //     session tokens) instead of the old plaintext/no-auth checks.
-//   - Email (Gmail SMTP via Nodemailer) and optional WhatsApp (WATI)
+//   - Email (Resend HTTPS API, or Gmail SMTP via Nodemailer) and optional WhatsApp (WATI)
 //     notifications, with correct "Dr. Rana Dental Clinic" branding.
 //   - Hand-rolled PDF generation for prescriptions, follow-ups, reports
 //     and billing summaries.
@@ -164,7 +164,7 @@ const ADMIN_NOTIFICATION_EMAIL = (process.env.ADMIN_NOTIFICATION_EMAIL || '').tr
 
 async function sendMailSafe(options) {
   if (!mailer.configured) {
-    return { sent: false, error: 'Email is not configured on the server (EMAIL_USER / EMAIL_PASSWORD missing).' };
+    return { sent: false, error: 'Email is not configured on the server (set RESEND_API_KEY + RESEND_FROM_EMAIL, or EMAIL_USER + EMAIL_PASSWORD).' };
   }
   try {
     await mailer.transporter.sendMail({ from: mailer.fromAddress, ...options });

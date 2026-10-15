@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.cjs",
     "dev": "node --watch server.cjs",
-    "test": "node scripts/smoke-test.mjs"
+    "test": "node scripts/smoke-test.mjs && node scripts/mailer-test.mjs"
   },
   "engines": {
     "node": "20.x"
