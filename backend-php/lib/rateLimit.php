@@ -2,9 +2,9 @@
 // File-based per-IP rate limiting.
 //
 // express-rate-limit kept its counters in memory; each PHP request is a fresh
-// process, so counters live in small JSON files under data/ratelimit/. There is
-// no cron on InfinityFree, so expired buckets are pruned opportunistically
-// when they are touched instead of on a timer.
+// process, so counters live in small JSON files under data/ratelimit/. The app
+// deliberately does not depend on a scheduler, so expired buckets are pruned
+// opportunistically when they are touched instead of on a timer.
 
 declare(strict_types=1);
 

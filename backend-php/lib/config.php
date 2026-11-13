@@ -1,7 +1,7 @@
 <?php
 // Configuration loader.
 //
-// Production (InfinityFree) has no environment variables, so config.php is the
+// Production (Serv00) has no environment variables, so config.php is the
 // single source of truth there. Locally the same keys can be supplied through
 // the environment instead, which is what the smoke test does to get a
 // throwaway DATA_DIR and blanked email/WhatsApp credentials.

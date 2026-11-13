@@ -1,8 +1,8 @@
 <?php
 // Dr. Rana Dental Clinic -- PHP API front controller.
 //
-// Deployed at htdocs/api/index.php on InfinityFree, where every /api/... path
-// is rewritten to this file (see .htaccess). It is a faithful port of
+// Deployed to <public_html>/api/index.php on Serv00, where the site .htaccess
+// routes every /api/... path here. It is a faithful port of
 // backend/server.cjs: same paths, same verbs, same JSON shapes, so the
 // existing React frontend needs no changes beyond pointing at the same origin.
 //
@@ -29,7 +29,8 @@ const ADMIN_DEFAULT_PASSWORD = 'password123';
 const ADMIN_TOKEN_TTL_SECONDS = 43200;        // 12 hours
 const PATIENT_TOKEN_TTL_SECONDS = 2592000;    // 30 days
 
-// InfinityFree caps a single file at 10 MB and base64 inflates by ~33%.
+// Uploads travel base64-encoded inside JSON (~33% inflation) and the account
+// has 512 MB of RAM, so each file stays well inside PHP's post_max_size.
 const MAX_MEDIA_UPLOAD_BYTES = 6 * 1024 * 1024;
 const MAX_JSON_BODY_BYTES = 100 * 1024;
 const MAX_UPLOAD_BODY_BYTES = 12 * 1024 * 1024;

@@ -5,7 +5,7 @@
 // ("skipped", never thrown) when WATI isn't configured, so WhatsApp remains a
 // bonus on top of email rather than a requirement.
 //
-// InfinityFree allows outbound HTTPS to WATI's API, so this works unchanged.
+// Serv00 allows outbound HTTPS to WATI's API, so this works unchanged.
 
 declare(strict_types=1);
 

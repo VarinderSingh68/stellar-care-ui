@@ -1,0 +1,61 @@
+# Dr. Rana Dental Clinic -- Serv00 (public_html)
+#
+# Serv00 serves sites with nginx plus a module that implements the Apache
+# .htaccess standard, but only for websites added as the "PHP" type. This single
+# file carries everything the app needs: the PHP version pin, API routing,
+# protected folders, response headers and the React Router fallback.
+
+# Serv00's default is PHP 8.3. The API is linted against 8.2 in CI, so pin the
+# site to the same version here (swap php82 for php83 if you ever move CI).
+AddType application/x-httpd-php82 .php
+
+Options -Indexes
+
+RewriteEngine On
+RewriteBase /
+
+# --- API ------------------------------------------------------------------
+# Internals are never directly reachable.
+RewriteRule ^api/(lib|scripts)(/|$) - [F]
+RewriteRule ^api/(config|router)\.php$ - [F]
+RewriteRule ^api/index\.php$ - [L]
+
+# Every other /api/... path is handled by the front controller.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^api/(.*)$ api/index.php [QSA,L]
+
+# --- Private data ---------------------------------------------------------
+# JSON collections, the session secret and generated PDFs live here and must
+# never be fetchable over HTTP.
+RewriteRule ^data(/|$) - [F]
+
+# Uploaded media is public, but nothing in it may execute.
+RewriteRule ^uploads/.*\.(php|phtml|phar|php[0-9]|inc|cgi|pl|py|sh|html?|svg)$ - [F]
+
+# --- React Router ---------------------------------------------------------
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+RewriteRule . /index.html [L]
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set X-Frame-Options "SAMEORIGIN"
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css text/plain application/javascript application/json image/svg+xml
+</IfModule>
+
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType application/javascript "access plus 1 year"
+  ExpiresByType image/svg+xml "access plus 1 month"
+  ExpiresByType image/png "access plus 1 month"
+  ExpiresByType image/jpeg "access plus 1 month"
+  ExpiresByType image/webp "access plus 1 month"
+</IfModule>

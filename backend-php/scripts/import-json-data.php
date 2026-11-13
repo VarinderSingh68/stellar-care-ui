@@ -5,7 +5,7 @@
 //
 // Options:
 //   --target=<dir>             Destination data folder (default: DATA_DIR from
-//                              config.php, i.e. htdocs/data on the server)
+//                              config.php, i.e. public_html/data on the server)
 //   --admin-username=<name>    Admin username to keep (default: admin)
 //   --admin-password=<pass>    New admin password (default: random, printed)
 //   --patient-password=<pass>  Temporary password set on every imported

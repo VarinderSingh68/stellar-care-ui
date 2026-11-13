@@ -4,10 +4,10 @@
 // Two transports, both exposing the same send() interface so index.php does
 // not care which is in use:
 //  - Resend (preferred): HTTPS API on port 443. This is the only transport
-//    that is guaranteed to work on InfinityFree, because it is a normal
+//    that is guaranteed to work on Serv00, because it is a normal
 //    outbound HTTPS request rather than a raw SMTP connection.
-//  - Gmail SMTP with an App Password (fallback): InfinityFree allows outbound
-//    SMTP on port 587 with STARTTLS. Sent with a small hand-written SMTP
+//  - Gmail SMTP with an App Password (fallback): Serv00 allows outbound SMTP
+//    on port 587 with STARTTLS. Sent with a small hand-written SMTP
 //    client so no Composer/PHPMailer dependency is needed.
 //
 // The clinic API also runs perfectly well with email disabled: every

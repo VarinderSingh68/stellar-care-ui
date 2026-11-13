@@ -1,7 +1,7 @@
 <?php
 // Small HTTP client used for the Resend API, WATI and the smoke test.
 //
-// cURL is enabled on InfinityFree and is used when available. The stream
+// cURL is enabled on Serv00 and is used when available. The stream
 // fallback matters for local development on PHP builds without ext-curl, and
 // keeps the API working instead of failing every email with a fatal error.
 

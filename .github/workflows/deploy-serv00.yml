@@ -1,13 +1,21 @@
-name: Deploy to InfinityFree
+name: Deploy to Serv00
 
-# Builds the React frontend and uploads it together with the PHP API to
-# InfinityFree over FTP. InfinityFree has no Git integration of its own, so this
-# workflow is the "deploy from GitHub" path.
+# Builds the React frontend and uploads it together with the PHP API to a Serv00
+# account over SFTP. Serv00 has no Git integration of its own, so this workflow
+# is the "deploy from GitHub" path.
+#
+# One-time setup in the Serv00 panel (DevilWEB):
+#   1. WWW websites -> add your domain/subdomain with Website type = PHP
+#      (Serv00 only honours .htaccess on PHP-type websites).
+#   2. SSL certificates -> request the free Let's Encrypt certificate.
+#   3. Additional -> SSH keys -> paste the PUBLIC half of a key you generate.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
-#   FTP_SERVER    ftpupload.net
-#   FTP_USERNAME  your InfinityFree FTP username (if0_xxxxxxxx)
-#   FTP_PASSWORD  your InfinityFree FTP / control-panel password
+#   SSH_HOST         e.g. s5.serv00.com (the server shown in the panel)
+#   SSH_PORT         22
+#   SSH_USERNAME     your Serv00 login
+#   SSH_PRIVATE_KEY  the private key matching the one added in the panel
+#   DEPLOY_PATH      /usr/home/<login>/domains/<domain>/public_html
 #
 # The site's API is same-origin, so VITE_API_URL is deliberately left unset:
 # frontend/src/lib/config.ts falls back to window.location.origin.
@@ -18,12 +26,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: infinityfree-deploy
+  group: serv00-deploy
   cancel-in-progress: true
 
 jobs:
-  # InfinityFree runs PHP 8.2, so the port is linted and smoke-tested on that
-  # exact version before anything is uploaded.
+  # Serv00 runs PHP 8.2 for this site (pinned in the .htaccess), so the port is
+  # linted and smoke-tested on that exact version before anything is uploaded.
   php:
     name: PHP 8.2 checks
     runs-on: ubuntu-latest
@@ -69,7 +77,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf deploy-out
-          mkdir -p deploy-out/api deploy-out/data deploy-out/uploads
+          mkdir -p deploy-out/api
 
           # Static site
           cp -r frontend/dist/. deploy-out/
@@ -78,22 +86,22 @@ jobs:
           cp -r backend-php/. deploy-out/api/
           rm -rf deploy-out/api/scripts deploy-out/api/router.php deploy-out/api/config.example.php
 
-          # Apache configuration for the site root, data and uploads folders
-          cp deploy/infinityfree/htdocs/.htaccess deploy-out/.htaccess
-          cp deploy/infinityfree/htdocs/data/.htaccess deploy-out/data/.htaccess
-          cp deploy/infinityfree/htdocs/uploads/.htaccess deploy-out/uploads/.htaccess
+          # Serv00/Apache configuration for the site root
+          cp deploy/serv00/public_html/.htaccess deploy-out/.htaccess
 
           # A real config.php must never be committed or shipped: it holds the
           # Resend key and the session secret, and lives only on the server.
           rm -f deploy-out/api/config.php
 
-      - name: Upload to InfinityFree over FTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+      - name: Upload to Serv00 over SFTP
+        uses: appleboy/scp-action@v0.1.7
         with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          local-dir: ./deploy-out/
-          server-dir: /htdocs/
-          # Never wipe server-side data (htdocs/data, htdocs/uploads).
-          dangerous-clean-slate: false
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "deploy-out/*"
+          target: ${{ secrets.DEPLOY_PATH }}
+          # Strip the deploy-out/ prefix so the files land directly in public_html.
+          strip_components: 1
+          overwrite: true

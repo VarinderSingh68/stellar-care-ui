@@ -3,9 +3,9 @@
 //
 //   php -S 127.0.0.1:5001 backend-php/router.php
 //
-// It mirrors what Apache does on InfinityFree: requests under /api are handed
-// to index.php (with SCRIPT_NAME rewritten so routing matches production), and
-// /uploads/media/* is served from the local uploads folder.
+// It mirrors what the nginx/.htaccess layer does on Serv00: requests under /api
+// are handed to index.php (with SCRIPT_NAME rewritten so routing matches
+// production), and /uploads/media/* is served from the local uploads folder.
 
 declare(strict_types=1);
 
