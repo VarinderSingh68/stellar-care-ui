@@ -8,10 +8,10 @@
 // (write to a temp file, then rename) so a crash mid-write can't leave a
 // half-written file behind.
 //
-// NOTE: on hosting providers with an ephemeral filesystem (e.g. a Render
-// "Web Service" without a persistent Disk attached), anything written here
-// is lost on every deploy/restart. Set DATA_DIR to a mounted persistent
-// disk path to survive restarts. See the README.
+// NOTE: on hosting providers with an ephemeral filesystem (a Node web service
+// without a persistent disk attached), anything written here is lost on every
+// deploy/restart. Set DATA_DIR to a mounted persistent disk path to survive
+// restarts. See the README.
 
 const fs = require('fs');
 const path = require('path');

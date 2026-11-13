@@ -1,0 +1,99 @@
+name: Deploy to InfinityFree
+
+# Builds the React frontend and uploads it together with the PHP API to
+# InfinityFree over FTP. InfinityFree has no Git integration of its own, so this
+# workflow is the "deploy from GitHub" path.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   FTP_SERVER    ftpupload.net
+#   FTP_USERNAME  your InfinityFree FTP username (if0_xxxxxxxx)
+#   FTP_PASSWORD  your InfinityFree FTP / control-panel password
+#
+# The site's API is same-origin, so VITE_API_URL is deliberately left unset:
+# frontend/src/lib/config.ts falls back to window.location.origin.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: infinityfree-deploy
+  cancel-in-progress: true
+
+jobs:
+  # InfinityFree runs PHP 8.2, so the port is linted and smoke-tested on that
+  # exact version before anything is uploaded.
+  php:
+    name: PHP 8.2 checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Lint every PHP file
+        run: |
+          set -euo pipefail
+          find backend-php -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Run the API smoke test
+        run: php backend-php/scripts/smoke-test.php
+
+  deploy:
+    needs: php
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Assemble deployment folder
+        run: |
+          set -euo pipefail
+          rm -rf deploy-out
+          mkdir -p deploy-out/api deploy-out/data deploy-out/uploads
+
+          # Static site
+          cp -r frontend/dist/. deploy-out/
+
+          # PHP API (scripts and the dev router stay in the repository)
+          cp -r backend-php/. deploy-out/api/
+          rm -rf deploy-out/api/scripts deploy-out/api/router.php deploy-out/api/config.example.php
+
+          # Apache configuration for the site root, data and uploads folders
+          cp deploy/infinityfree/htdocs/.htaccess deploy-out/.htaccess
+          cp deploy/infinityfree/htdocs/data/.htaccess deploy-out/data/.htaccess
+          cp deploy/infinityfree/htdocs/uploads/.htaccess deploy-out/uploads/.htaccess
+
+          # A real config.php must never be committed or shipped: it holds the
+          # Resend key and the session secret, and lives only on the server.
+          rm -f deploy-out/api/config.php
+
+      - name: Upload to InfinityFree over FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./deploy-out/
+          server-dir: /htdocs/
+          # Never wipe server-side data (htdocs/data, htdocs/uploads).
+          dangerous-clean-slate: false

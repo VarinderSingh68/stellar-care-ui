@@ -6,6 +6,7 @@ import {
   Check,
   CheckCircle2,
   ClipboardList,
+  Download,
   FileText,
   MessageCircle,
   NotebookPen,
@@ -29,6 +30,7 @@ import {
   changeAdminCredentials,
   createAppointment,
   DEFAULT_CLINIC_SETTINGS,
+  downloadBackup,
   getAdminUsername,
   getBookings,
   getClinicalNotes,
@@ -290,6 +292,8 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
   const [billingForm, setBillingForm] = useState(createDefaultBillingForm);
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [settingsForm, setSettingsForm] = useState<ClinicSettings>(DEFAULT_CLINIC_SETTINGS);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupError, setBackupError] = useState("");
   const [credentialForm, setCredentialForm] = useState({ username: "", password: "", confirmPassword: "" });
 
   useEffect(() => {
@@ -867,6 +871,18 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
       setMessage("Settings saved.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to save settings.");
+    }
+  };
+
+  const runBackup = async () => {
+    setBackupBusy(true);
+    setBackupError("");
+    try {
+      await downloadBackup();
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : "Could not download the backup.");
+    } finally {
+      setBackupBusy(false);
     }
   };
 
@@ -1798,6 +1814,19 @@ const AdminOperationsPanel = ({ activeTool, onToolChange }: AdminOperationsPanel
                 </div>
               </div>
             </div>
+          </section>
+
+          <section className={panelClass}>
+            <h2 className="text-xl font-semibold text-foreground">Data backup</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Download every patient record, appointment, prescription PDF and uploaded file as one ZIP. The hosting has no scheduled
+              backups, so keep a copy somewhere other than the server.
+            </p>
+            <Button onClick={runBackup} disabled={backupBusy} variant="outline" className="mt-4 gap-2">
+              <Download className="h-4 w-4" />
+              {backupBusy ? "Preparing backup..." : "Download backup"}
+            </Button>
+            {backupError ? <p className="mt-3 text-sm text-destructive">{backupError}</p> : null}
           </section>
         </TabsContent>
       </Tabs>

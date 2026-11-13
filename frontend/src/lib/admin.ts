@@ -1,5 +1,5 @@
 import { API_CONFIG } from "./config";
-import { apiGet, apiPost, apiPut, clearAdminToken, dispatchWindowEvent, isAdminAuthenticated, setAdminToken } from "./api";
+import { ApiError, apiGet, apiPost, apiPut, clearAdminToken, dispatchWindowEvent, getAdminToken, isAdminAuthenticated, setAdminToken } from "./api";
 
 // NOTE: this used to be a localStorage-backed module -- every collection
 // below now lives on the backend (see backend/server.cjs + backend/lib/store.cjs)
@@ -164,10 +164,10 @@ export const setMediaItems = async (media: AdminMediaItem[]): Promise<void> => {
 };
 
 // Media uploaded through /api/admin/media-upload comes back as a path
-// relative to the API server (e.g. "/uploads/media/xyz.png"). The frontend
-// and API are separate Render services with different origins, so any
-// relative URL needs the API's base URL prefixed before it can be used in
-// an <img>/<video> src. A URL the admin pasted in directly (http/https) is
+// relative to the API server (e.g. "/uploads/media/xyz.png"). In production
+// the site and API share one origin, but a relative URL still needs the API's
+// base URL prefixed so it also works when VITE_API_URL points somewhere else
+// during local development. A URL the admin pasted in directly (http/https) is
 // left untouched.
 export const resolveMediaUrl = (url: string): string => {
   if (!url) return url;
@@ -274,18 +274,92 @@ export const setClinicSettings = async (settings: ClinicSettings): Promise<void>
   dispatchWindowEvent("clinicSettingsUpdated");
 };
 
+// --- Backup ---------------------------------------------------------------
+
+// Downloads a ZIP of every JSON collection, the generated prescription PDFs and
+// the uploaded media. Uses fetch instead of a plain link because the endpoint
+// needs the admin bearer token, and takes the filename from the response
+// headers (the API stamps it with the date/time).
+export const downloadBackup = async (): Promise<void> => {
+  const token = getAdminToken();
+  const response = await fetch(`${API_CONFIG.baseUrl}/api/admin/backup`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new ApiError(payload?.message || `Backup failed (${response.status}).`, response.status);
+  }
+
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const filename = match ? match[1] : "clinic-backup.zip";
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
 // --- Admin auth -----------------------------------------------------------
+
+export interface AdminLoginResponse {
+  success: boolean;
+  require2FA?: boolean;
+  tempToken?: string;
+  email?: string;
+  maskedEmail?: string;
+  message?: string;
+  token?: string;
+  username?: string;
+}
+
+export interface Admin2FAVerifyResponse {
+  success: boolean;
+  token?: string;
+  username?: string;
+  message?: string;
+}
 
 export const isAdminLoggedIn = (): boolean => isAdminAuthenticated();
 
+export const initiateAdminLogin = async (
+  username: string,
+  password: string
+): Promise<AdminLoginResponse> => {
+  const result = await apiPost<AdminLoginResponse>("/api/admin/login", { username, password });
+  if (result?.success && result.token) {
+    setAdminToken(result.token);
+  }
+  return result;
+};
+
+export const verifyAdmin2FA = async (
+  tempToken: string,
+  code: string
+): Promise<Admin2FAVerifyResponse> => {
+  const result = await apiPost<Admin2FAVerifyResponse>("/api/admin/verify-2fa", { tempToken, code });
+  if (result?.success && result.token) {
+    setAdminToken(result.token);
+  }
+  return result;
+};
+
+export const resendAdmin2FA = async (
+  tempToken: string
+): Promise<{ success: boolean; message: string }> => {
+  return await apiPost<{ success: boolean; message: string }>("/api/admin/resend-2fa", { tempToken });
+};
+
 export const loginAdmin = async (username: string, password: string): Promise<boolean> => {
   try {
-    const result = await apiPost<{ success: boolean; token: string }>("/api/admin/login", { username, password });
-    if (result?.success && result.token) {
-      setAdminToken(result.token);
-      return true;
-    }
-    return false;
+    const result = await initiateAdminLogin(username, password);
+    return Boolean(result?.success && result?.token);
   } catch {
     return false;
   }

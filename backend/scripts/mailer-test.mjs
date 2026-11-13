@@ -110,12 +110,10 @@ const gmailBoot = async (error, env = {}) => {
   }
 };
 const netError = Object.assign(new Error('connect ENETUNREACH 2607:f8b0:400e:c0d::6c:465 - Local (:::0)'), { code: 'ESOCKET' });
-const onRender = await gmailBoot(netError, { RENDER: 'true' });
-check('on Render, a network failure explains the SMTP block', onRender.includes('Render free instances block outbound SMTP') && !onRender.includes('Check EMAIL_USER'), onRender);
-const offRender = await gmailBoot(netError);
-check('off Render, a network failure points at the network', offRender.includes('Could not reach smtp.gmail.com:465') && !offRender.includes('Check EMAIL_USER'), offRender);
+const networkFailure = await gmailBoot(netError);
+check('a network failure points at the network', networkFailure.includes('Could not reach smtp.gmail.com:465') && !networkFailure.includes('Check EMAIL_USER'), networkFailure);
 const authError = Object.assign(new Error('Invalid login: 535-5.7.8 Username and Password not accepted'), { code: 'EAUTH' });
-check('an auth failure points at the credentials', (await gmailBoot(authError, { RENDER: 'true' })).includes('Check EMAIL_USER / EMAIL_PASSWORD'));
+check('an auth failure points at the credentials', (await gmailBoot(authError)).includes('Check EMAIL_USER / EMAIL_PASSWORD'));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

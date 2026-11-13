@@ -110,10 +110,46 @@ function emailShell({ clinicInfo, eyebrow, heading, greetingName, introHtml, bod
 </html>`;
 }
 
+function admin2FAEmail({ clinicInfo, username, code, expiresInMinutes = 10 }) {
+  const { clinicName } = clinicInfo;
+  return emailShell({
+    clinicInfo,
+    eyebrow: 'Admin Portal Security',
+    heading: 'Admin 2FA Verification Code',
+    greetingName: username,
+    introHtml: `A login attempt was initiated for the administrator account at <strong>${escapeHtml(clinicName)}</strong>. Please use the following one-time code to complete your login:`,
+    bodyHtml: `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+        <tr>
+          <td align="center" style="background:#f0fdf4;border:2px dashed #22c55e;border-radius:12px;padding:24px 20px;">
+            <div style="font-size:12px;font-weight:700;color:#16a34a;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">Your 6-Digit Code</div>
+            <div style="font-size:38px;font-weight:800;letter-spacing:10px;color:#15803d;font-family:'Courier New',Courier,monospace;line-height:1.2;">
+              ${escapeHtml(code)}
+            </div>
+          </td>
+        </tr>
+      </table>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0;">
+        <tr>
+          <td style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px 18px;font-size:13.5px;color:#1e3a8a;line-height:1.6;">
+            ⏱️ <strong>This code is valid for ${expiresInMinutes} minutes.</strong><br/>
+            🔒 Never share this code with anyone. Clinic administrators will never ask for your code.
+          </td>
+        </tr>
+      </table>
+      <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:16px 0 0;">
+        If you did not initiate this login, someone may be attempting to access your clinic admin portal. Please review your account credentials immediately.
+      </p>
+    `,
+    footerNote: 'This is an automated 2FA security notification delivered directly to the clinic owner email address.',
+  });
+}
+
 module.exports = {
   escapeHtml,
   detailTable,
   highlightBox,
   multilineHtml,
   emailShell,
+  admin2FAEmail,
 };

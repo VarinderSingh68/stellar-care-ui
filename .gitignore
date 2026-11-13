@@ -12,11 +12,22 @@ env/*.env
 .env.*
 
 # Backend runtime data: JSON data store, uploaded media and generated PDFs
-# (backend/lib/store.cjs). This is data, not source. On Render, DATA_DIR
-# points at a persistent Disk instead (see render.yaml).
+# (backend/lib/store.cjs and the PHP API). This is data, not source.
 backend/data/
 backend/data_test/
 backend/uploads/
+backend-php/data/
+backend-php/uploads/
+
+# PHP API secrets -- config.php holds the Resend key and session secret and
+# exists only on the server. Only the *.example template is committed.
+backend-php/config.php
+
+# Deployment scaffolding produced by the GitHub Actions workflow
+deploy-out/
+
+# Local scratch output
+.tmp-smoke/
 
 # Logs & scratch files
 logs

@@ -1,7 +1,8 @@
 // Dr. Rana Dental Clinic -- unified backend API.
 //
-// This is the single backend entry point for the whole app (`npm start` in
-// backend/, and what render.yaml runs). It is one Express app that provides:
+// This is the Node backend entry point (`npm start` in backend/, used for local
+// development). Production runs the PHP port in backend-php/ instead; both
+// expose the same routes. It is one Express app that provides:
 //   - Server-side, file-backed storage for every collection the admin
 //     console and patient portal use (patients, appointments, treatment
 //     plans, clinical notes, staff, settings, follow-ups, consent forms,
@@ -20,6 +21,8 @@
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 const fs = require('fs');
 const path = require('path');
@@ -86,13 +89,20 @@ Object.entries(COLLECTIONS).forEach(([name, config]) => {
 const ADMIN_DEFAULT_USERNAME = 'admin';
 const ADMIN_DEFAULT_PASSWORD = 'password123';
 
+let currentAdminTokenVersion = 1;
+
 async function bootstrapAdminCredentials() {
   const existing = await adminCredentialsStore.read();
-  if (existing && existing.username && existing.passwordHash) return;
+  if (existing && existing.username && existing.passwordHash) {
+    currentAdminTokenVersion = existing.tokenVersion || 1;
+    return;
+  }
   await adminCredentialsStore.write({
     username: ADMIN_DEFAULT_USERNAME,
     passwordHash: hashPassword(ADMIN_DEFAULT_PASSWORD),
+    tokenVersion: 1,
   });
+  currentAdminTokenVersion = 1;
   console.log(`ℹ️  Created default admin account (${ADMIN_DEFAULT_USERNAME} / ${ADMIN_DEFAULT_PASSWORD}).`);
   console.log('   Change this immediately from Admin Dashboard -> Settings once you log in.');
 }
@@ -141,6 +151,9 @@ function requireAdmin(req, res, next) {
   if (!auth || auth.role !== 'admin') {
     return res.status(401).json({ success: false, message: 'Admin authentication required.' });
   }
+  if (auth.v && auth.v < currentAdminTokenVersion) {
+    return res.status(401).json({ success: false, message: 'Session has been invalidated. Please sign in again.' });
+  }
   req.auth = auth;
   next();
 }
@@ -161,6 +174,38 @@ function requirePatient(req, res, next) {
 const mailer = createMailer();
 const wati = createWatiClient();
 const ADMIN_NOTIFICATION_EMAIL = (process.env.ADMIN_NOTIFICATION_EMAIL || '').trim() || null;
+const ADMIN_2FA_EMAIL = (
+  process.env.ADMIN_2FA_EMAIL ||
+  process.env.ADMIN_NOTIFICATION_EMAIL ||
+  process.env.EMAIL_USER ||
+  'ngw.designer@gmail.com'
+).trim();
+
+// Two-factor authentication (2FA) in-memory state:
+// Map<challengeId, { code, username, email, expiresAt, attempts, lastResentAt }>
+const admin2FAChallenges = new Map();
+
+function cleanupExpired2FAChallenges() {
+  const now = Date.now();
+  for (const [id, challenge] of admin2FAChallenges.entries()) {
+    if (challenge.expiresAt <= now) {
+      admin2FAChallenges.delete(id);
+    }
+  }
+}
+
+const cleanup2FAInterval = setInterval(cleanupExpired2FAChallenges, 5 * 60 * 1000);
+if (cleanup2FAInterval.unref) cleanup2FAInterval.unref();
+
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return '';
+  const [local, domain] = email.split('@');
+  if (!domain) return email;
+  if (local.length <= 2) return `${local[0]}*@${domain}`;
+  const first = local.slice(0, 2);
+  const last = local.slice(-1);
+  return `${first}${'*'.repeat(Math.max(3, local.length - 3))}${last}@${domain}`;
+}
 
 async function sendMailSafe(options) {
   if (!mailer.configured) {
@@ -236,9 +281,67 @@ function notifyAdminOfPatientEmail({ clinicInfo, subject, heading, eyebrow, intr
 // ---------------------------------------------------------------------------
 
 const app = express();
-app.use(express.json({ limit: '20mb' }));
-app.use(cors());
-app.use('/uploads', express.static(path.join(DATA_DIR, 'uploads')));
+
+// Security headers via Helmet
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+
+// CORS policy
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (
+      !origin ||
+      process.env.NODE_ENV !== 'production' ||
+      ALLOWED_ORIGINS.length === 0 ||
+      ALLOWED_ORIGINS.includes(origin)
+    ) {
+      callback(null, true);
+    } else {
+      callback(new Error('Blocked by CORS policy.'));
+    }
+  },
+  credentials: true,
+}));
+
+// Global body parser with tight 100KB limit (large 20MB is scoped specifically to media upload)
+app.use(express.json({ limit: '100kb' }));
+
+// Rate limiters (skipped during automated tests)
+const isTestEnv = process.env.NODE_ENV === 'test';
+const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { success: false, message: 'Too many authentication attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTestEnv,
+});
+
+const bookingRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  message: { success: false, message: 'Too many booking requests from this network. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTestEnv,
+});
+
+app.use('/api/admin/login', authRateLimiter);
+app.use('/api/patient/login', authRateLimiter);
+app.use('/api/patient/register', authRateLimiter);
+app.use('/api/send-booking', bookingRateLimiter);
+
+// Static uploads with nosniff protection
+app.use('/uploads', (req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+}, express.static(path.join(DATA_DIR, 'uploads')));
 
 app.get('/health', (req, res) => {
   res.json({
@@ -305,7 +408,7 @@ app.put('/api/settings', requireAdmin, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Admin auth
+// Admin auth (with 2-Factor Authentication via Email)
 // ---------------------------------------------------------------------------
 
 app.post('/api/admin/login', async (req, res) => {
@@ -321,8 +424,175 @@ app.post('/api/admin/login', async (req, res) => {
     return res.status(401).json({ success: false, message: 'Invalid username or password.' });
   }
 
-  const token = signToken({ role: 'admin', sub: 'admin' }, ADMIN_TOKEN_TTL_SECONDS);
-  res.json({ success: true, token, username: credentials.username });
+  cleanupExpired2FAChallenges();
+
+  // Generate 6-digit random verification code
+  const code = String(crypto.randomInt(100000, 1000000));
+  const challengeId = crypto.randomBytes(24).toString('hex');
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes validity
+
+  const targetEmail = ADMIN_2FA_EMAIL;
+
+  admin2FAChallenges.set(challengeId, {
+    code,
+    username: credentials.username,
+    email: targetEmail,
+    expiresAt,
+    attempts: 0,
+    lastResentAt: Date.now(),
+  });
+
+  const tempToken = signToken(
+    { role: 'admin_2fa_pending', sub: credentials.username, challengeId },
+    10 * 60
+  );
+
+  const clinicInfo = await getClinicInfo();
+  const emailHtml = emailTpl.admin2FAEmail({
+    clinicInfo,
+    username: credentials.username,
+    code,
+    expiresInMinutes: 10,
+  });
+
+  const mailResult = await sendMailSafe({
+    to: targetEmail,
+    subject: `🔐 Your Admin Login Code: ${code} - ${clinicInfo.clinicName}`,
+    html: emailHtml,
+  });
+
+  if (!mailResult.sent) {
+    console.warn(`⚠️  [2FA] Could not deliver email to ${targetEmail}: ${mailResult.error}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`🔐 [2FA FALLBACK] Admin verification code for ${credentials.username} is: ${code}`);
+    }
+  } else {
+    console.log(`✅ [2FA] Verification code sent to ${targetEmail} for admin ${credentials.username}`);
+  }
+
+  res.json({
+    success: true,
+    require2FA: true,
+    tempToken,
+    email: targetEmail,
+    maskedEmail: maskEmail(targetEmail),
+    message: `A 6-digit verification code has been sent to ${targetEmail}.`,
+    ...(process.env.NODE_ENV === 'test' ? { testOtpCode: code } : {}),
+  });
+});
+
+app.post('/api/admin/verify-2fa', async (req, res) => {
+  await bootstrapPromise;
+  const tempToken = String(req.body?.tempToken || '').trim();
+  const rawCode = String(req.body?.code || '').trim().replace(/\D/g, '');
+
+  if (!tempToken || !rawCode) {
+    return res.status(400).json({ success: false, message: 'Verification session and 6-digit code are required.' });
+  }
+
+  if (rawCode.length !== 6) {
+    return res.status(400).json({ success: false, message: 'Code must be exactly 6 digits.' });
+  }
+
+  const payload = verifyToken(tempToken);
+  if (!payload || payload.role !== 'admin_2fa_pending' || !payload.challengeId) {
+    return res.status(401).json({ success: false, message: 'Verification session has expired or is invalid. Please sign in again.' });
+  }
+
+  cleanupExpired2FAChallenges();
+  const challenge = admin2FAChallenges.get(payload.challengeId);
+  if (!challenge) {
+    return res.status(401).json({ success: false, message: 'Verification code has expired. Please sign in again.' });
+  }
+
+  if (challenge.expiresAt <= Date.now()) {
+    admin2FAChallenges.delete(payload.challengeId);
+    return res.status(401).json({ success: false, message: 'Verification code has expired. Please sign in again.' });
+  }
+
+  if (challenge.attempts >= 5) {
+    admin2FAChallenges.delete(payload.challengeId);
+    return res.status(401).json({ success: false, message: 'Too many incorrect attempts. Session invalidated. Please sign in again.' });
+  }
+
+  if (challenge.code !== rawCode) {
+    challenge.attempts += 1;
+    const remaining = 5 - challenge.attempts;
+    if (remaining <= 0) {
+      admin2FAChallenges.delete(payload.challengeId);
+      return res.status(401).json({ success: false, message: 'Too many incorrect attempts. Session invalidated. Please sign in again.' });
+    }
+    return res.status(400).json({
+      success: false,
+      message: `Invalid code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`,
+    });
+  }
+
+  // Code verified! Invalidate challenge immediately (one-time use)
+  admin2FAChallenges.delete(payload.challengeId);
+
+  const token = signToken({ role: 'admin', sub: challenge.username, v: currentAdminTokenVersion }, ADMIN_TOKEN_TTL_SECONDS);
+  res.json({ success: true, token, username: challenge.username });
+});
+
+app.post('/api/admin/resend-2fa', async (req, res) => {
+  await bootstrapPromise;
+  const tempToken = String(req.body?.tempToken || '').trim();
+  if (!tempToken) {
+    return res.status(400).json({ success: false, message: 'Verification session is required.' });
+  }
+
+  const payload = verifyToken(tempToken);
+  if (!payload || payload.role !== 'admin_2fa_pending' || !payload.challengeId) {
+    return res.status(401).json({ success: false, message: 'Verification session has expired. Please sign in again.' });
+  }
+
+  cleanupExpired2FAChallenges();
+  const challenge = admin2FAChallenges.get(payload.challengeId);
+  if (!challenge) {
+    return res.status(401).json({ success: false, message: 'Verification session has expired. Please sign in again.' });
+  }
+
+  const now = Date.now();
+  if (challenge.lastResentAt && (now - challenge.lastResentAt) < 30000) {
+    const waitSeconds = Math.ceil((30000 - (now - challenge.lastResentAt)) / 1000);
+    return res.status(429).json({ success: false, message: `Please wait ${waitSeconds}s before requesting a new code.` });
+  }
+
+  const newCode = String(crypto.randomInt(100000, 1000000));
+  challenge.code = newCode;
+  challenge.expiresAt = now + 10 * 60 * 1000;
+  challenge.attempts = 0;
+  challenge.lastResentAt = now;
+
+  const clinicInfo = await getClinicInfo();
+  const emailHtml = emailTpl.admin2FAEmail({
+    clinicInfo,
+    username: challenge.username,
+    code: newCode,
+    expiresInMinutes: 10,
+  });
+
+  const mailResult = await sendMailSafe({
+    to: challenge.email,
+    subject: `🔐 Your Admin Login Code: ${newCode} - ${clinicInfo.clinicName}`,
+    html: emailHtml,
+  });
+
+  if (!mailResult.sent) {
+    console.warn(`⚠️  [2FA] Could not deliver resent email to ${challenge.email}: ${mailResult.error}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`🔐 [2FA FALLBACK] Resent Admin verification code for ${challenge.username} is: ${newCode}`);
+    }
+  } else {
+    console.log(`✅ [2FA] New verification code sent to ${challenge.email} for admin ${challenge.username}`);
+  }
+
+  res.json({
+    success: true,
+    message: `A new 6-digit verification code has been sent to ${challenge.email}.`,
+    ...(process.env.NODE_ENV === 'test' ? { testOtpCode: newCode } : {}),
+  });
 });
 
 app.get('/api/admin/me', requireAdmin, async (req, res) => {
@@ -338,9 +608,11 @@ app.post('/api/admin/change-credentials', requireAdmin, async (req, res) => {
   }
 
   const current = await adminCredentialsStore.read();
+  currentAdminTokenVersion += 1;
   const updated = {
     username: nextUsername,
     passwordHash: nextPassword ? hashPassword(nextPassword) : current.passwordHash,
+    tokenVersion: currentAdminTokenVersion,
   };
   await adminCredentialsStore.write(updated);
   res.json({ success: true, username: updated.username });
@@ -536,7 +808,32 @@ const ALLOWED_MEDIA_TYPES = {
 };
 const MAX_MEDIA_UPLOAD_BYTES = 15 * 1024 * 1024;
 
-app.post('/api/admin/media-upload', requireAdmin, async (req, res) => {
+function verifyMediaFileSignature(buffer, contentType) {
+  if (!buffer || buffer.length < 4) return false;
+  if (contentType === 'image/jpeg') {
+    return buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+  }
+  if (contentType === 'image/png') {
+    return buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
+  }
+  if (contentType === 'image/gif') {
+    return buffer.subarray(0, 4).toString('ascii') === 'GIF8';
+  }
+  if (contentType === 'image/webp') {
+    return buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+  }
+  if (contentType === 'video/mp4' || contentType === 'video/quicktime') {
+    if (buffer.length < 8) return false;
+    const box = buffer.subarray(4, 8).toString('ascii');
+    return box === 'ftyp' || box === 'moov';
+  }
+  if (contentType === 'video/webm') {
+    return buffer[0] === 0x1A && buffer[1] === 0x45 && buffer[2] === 0xDF && buffer[3] === 0xA3;
+  }
+  return false;
+}
+
+app.post('/api/admin/media-upload', requireAdmin, express.json({ limit: '20mb' }), async (req, res) => {
   const { contentType, dataBase64 } = req.body || {};
   const extension = ALLOWED_MEDIA_TYPES[contentType];
   if (!extension) {
@@ -555,6 +852,11 @@ app.post('/api/admin/media-upload', requireAdmin, async (req, res) => {
 
   if (buffer.length === 0 || buffer.length > MAX_MEDIA_UPLOAD_BYTES) {
     return res.status(400).json({ success: false, message: `File must be between 1 byte and ${MAX_MEDIA_UPLOAD_BYTES / (1024 * 1024)}MB. For larger videos, paste a hosted URL instead.` });
+  }
+
+  // Security: Verify magic bytes against declared MIME type to prevent script/executable spoofing
+  if (!verifyMediaFileSignature(buffer, contentType)) {
+    return res.status(400).json({ success: false, message: 'File signature does not match declared media type.' });
   }
 
   const filename = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${extension}`;
@@ -735,7 +1037,8 @@ app.post('/api/send-prescription', requireAdmin, async (req, res) => {
     const filename = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-prescription.pdf`;
     fs.writeFileSync(path.join(PRESCRIPTIONS_DIR, filename), pdfBuffer);
     const publicAppUrl = (process.env.PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
-    const pathname = `/api/prescriptions/${encodeURIComponent(filename)}`;
+    const downloadToken = signToken({ role: 'prescription_download', filename }, 48 * 3600);
+    const pathname = `/api/prescriptions/${encodeURIComponent(filename)}?token=${downloadToken}`;
     const localUrl = `${req.protocol}://${req.get('host')}${pathname}`;
     const publicUrl = publicAppUrl ? `${publicAppUrl}${pathname}` : localUrl;
 
@@ -832,8 +1135,31 @@ app.get('/api/prescriptions/:filename', (req, res) => {
   if (!filePath.startsWith(`${PRESCRIPTIONS_DIR}${path.sep}`) || !fs.existsSync(filePath)) {
     return res.status(404).json({ success: false, message: 'File not found.' });
   }
+
+  // Authorization check (Admin session, Patient session, or signed download token)
+  const auth = authenticateRequest(req);
+  const downloadToken = String(req.query?.token || '').trim();
+  let authorized = false;
+
+  if (auth && (auth.role === 'admin' || auth.role === 'patient')) {
+    authorized = true;
+  } else if (downloadToken) {
+    const payload = verifyToken(downloadToken);
+    if (payload && payload.role === 'prescription_download' && payload.filename === rawFilename) {
+      authorized = true;
+    }
+  }
+
+  if (!authorized) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Valid authorization or download token required.',
+    });
+  }
+
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${rawFilename}"`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   fs.createReadStream(filePath).pipe(res);
 });
 

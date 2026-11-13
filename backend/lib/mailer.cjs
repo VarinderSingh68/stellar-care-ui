@@ -5,21 +5,21 @@
 // configured" error instead of the whole process crashing. This is a
 // deliberate change from the old email server, which called
 // process.exit(1) at startup if credentials were missing, taking down the
-// entire API (not just email) when a Render env var was left unset.
+// entire API (not just email) when an environment variable was left unset.
 //
 // Two transports are supported, both exposing the same
 // transporter.sendMail(...) interface so server.cjs doesn't care which:
 //  - Resend (preferred): a real transactional email provider, reached over
-//    its HTTPS API (port 443). Deliberately NOT Resend's SMTP relay: Render's
-//    free web services block outbound SMTP ports (25/465/587), so any SMTP
-//    transport -- Resend's or Gmail's -- can never connect from there.
-//    Needs RESEND_API_KEY and a RESEND_FROM_EMAIL at a domain verified in
-//    the Resend dashboard -- without a verified domain, Resend will only
-//    deliver to the email address the Resend account was signed up with.
-//  - Gmail SMTP with an App Password (legacy fallback): works locally and on
-//    paid Render instances, but not on Render's free plan (SMTP is blocked),
-//    and mail sent from a personal Gmail account to third-party inboxes
-//    routinely gets dropped or spam-filtered. Prefer Resend.
+//    its HTTPS API (port 443). Deliberately NOT Resend's SMTP relay: many
+//    hosts block outbound SMTP ports (25/465/587), so any SMTP transport --
+//    Resend's or Gmail's -- cannot be relied on. Needs RESEND_API_KEY and a
+//    RESEND_FROM_EMAIL at a domain verified in the Resend dashboard --
+//    without a verified domain, Resend will only deliver to the email address
+//    the Resend account was signed up with.
+//  - Gmail SMTP with an App Password (legacy fallback): fine on a network that
+//    allows outbound SMTP, and mail sent from a personal Gmail account to
+//    third-party inboxes routinely gets dropped or spam-filtered. Prefer
+//    Resend.
 
 const nodemailer = require('nodemailer');
 
@@ -142,10 +142,7 @@ function createGmailMailer() {
       // SMTP port shows up as an IPv6 "ENETUNREACH" -- the network, not the
       // credentials, is the problem in that case.
       const networkFailure = ['ESOCKET', 'ETIMEDOUT', 'ECONNECTION', 'EDNS'].includes(error.code);
-      if (networkFailure && process.env.RENDER) {
-        console.error('   Render free instances block outbound SMTP (ports 25/465/587), so Gmail SMTP cannot connect from here.');
-        console.error('   Fix: set RESEND_API_KEY + RESEND_FROM_EMAIL (sent over HTTPS), or use a paid Render instance type.');
-      } else if (networkFailure) {
+      if (networkFailure) {
         console.error('   Could not reach smtp.gmail.com:465 -- check the network/firewall (outbound SMTP may be blocked).');
       } else {
         console.error('   Emails will fail to send until this is fixed. Check EMAIL_USER / EMAIL_PASSWORD (use a Gmail App Password).');

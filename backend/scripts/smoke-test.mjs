@@ -105,13 +105,19 @@ async function run() {
   const settings = await call('GET', '/api/settings');
   check('GET /api/settings (public)', settings.status === 200 && settings.json?.clinicName === 'Dr. Rana Dental Clinic');
 
-  // --- Admin auth
+  // --- Admin auth with 2FA
   const badLogin = await call('POST', '/api/admin/login', { body: { username: 'admin', password: 'wrong' } });
   check('admin login rejects bad password', badLogin.status === 401);
 
   const login = await call('POST', '/api/admin/login', { body: { username: 'admin', password: 'password123' } });
-  const admin = login.json?.token;
-  check('admin login (default account)', login.status === 200 && Boolean(admin));
+  check('admin login triggers 2FA challenge', login.status === 200 && login.json?.require2FA === true && Boolean(login.json?.tempToken));
+
+  const badOtp = await call('POST', '/api/admin/verify-2fa', { body: { tempToken: login.json?.tempToken, code: '000000' } });
+  check('admin verify-2fa rejects wrong code', badOtp.status === 400);
+
+  const verify = await call('POST', '/api/admin/verify-2fa', { body: { tempToken: login.json?.tempToken, code: login.json?.testOtpCode } });
+  const admin = verify.json?.token;
+  check('admin verify-2fa succeeds with correct code', verify.status === 200 && Boolean(admin));
 
   const me = await call('GET', '/api/admin/me', { token: admin });
   check('GET /api/admin/me', me.status === 200 && me.json?.username === 'admin');
@@ -208,8 +214,11 @@ async function run() {
   const rxFile = rx.json?.prescriptionPdf?.filename;
   check('POST /api/send-prescription generates PDF', rx.status === 200 && Boolean(rxFile), rx.text.slice(0, 200));
   if (rxFile) {
-    const pdf = await call('GET', `/api/prescriptions/${rxFile}`, { raw: true });
-    check('GET /api/prescriptions/:file serves a PDF', pdf.status === 200 && pdf.buf.subarray(0, 5).toString() === '%PDF-');
+    const unauth = await call('GET', `/api/prescriptions/${rxFile}`);
+    check('unauthenticated prescription access blocked (403)', unauth.status === 403);
+
+    const pdf = await call('GET', `/api/prescriptions/${rxFile}`, { token: admin, raw: true });
+    check('GET /api/prescriptions/:file serves a PDF with auth', pdf.status === 200 && pdf.buf.subarray(0, 5).toString() === '%PDF-');
   }
 
   const traversal = await call('GET', '/api/prescriptions/..%2F.session-secret');
@@ -231,7 +240,9 @@ async function run() {
   check('POST /api/admin/change-credentials', changed.status === 200 && changed.json?.username === 'admin2');
 
   const relogin = await call('POST', '/api/admin/login', { body: { username: 'admin2', password: 'newpass1' } });
-  check('login with changed credentials', relogin.status === 200);
+  check('login with changed credentials triggers 2FA', relogin.status === 200 && relogin.json?.require2FA === true);
+  const reverify = await call('POST', '/api/admin/verify-2fa', { body: { tempToken: relogin.json?.tempToken, code: relogin.json?.testOtpCode } });
+  check('verify-2fa succeeds for changed credentials', reverify.status === 200 && Boolean(reverify.json?.token));
 
   const api404 = await call('GET', '/api/does-not-exist');
   check('unknown /api route -> JSON 404', api404.status === 404 && api404.json?.success === false);

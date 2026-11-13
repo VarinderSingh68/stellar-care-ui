@@ -3,8 +3,9 @@ import dotenv from 'dotenv';
 
 // Local development reads VITE_* variables from env/frontend.env at the repo
 // root. Vite picks up VITE_* keys from process.env, and dotenv never
-// overrides variables that are already set, so on Render (where that file
-// doesn't exist) the host's VITE_API_URL is used as-is.
+// overrides variables that are already set, so a build without that file
+// (CI / InfinityFree) simply has no VITE_API_URL and the app falls back to its
+// own origin.
 dotenv.config({ path: path.resolve(__dirname, '..', 'env', 'frontend.env') });
 
 export default {
